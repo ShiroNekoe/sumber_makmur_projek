@@ -1,0 +1,158 @@
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+
+from app.core.config import settings
+from app.domain.interfaces import ITriggerEngine, ICooldownRepository, ITokenInfoService, IMLPipeline
+from app.domain.models import CooldownState
+
+logger = logging.getLogger(__name__)
+
+
+class TriggerEngine(ITriggerEngine):
+    """
+    Layer 1 Use Case: Wallet Movement Trigger Engine (F-03)
+    Evaluates sliding time windows, cooldowns, and hard filters before firing the ML pipeline.
+    """
+    def __init__(
+        self,
+        cooldown_repo: ICooldownRepository,
+        token_info_service: ITokenInfoService,
+        ml_pipeline: IMLPipeline
+    ):
+        self.cooldown_repo = cooldown_repo
+        self.token_info_service = token_info_service
+        self.ml_pipeline = ml_pipeline
+        
+        # Sliding Window Storage: token_mint -> List of event dicts
+        self.window_events: Dict[str, List[dict]] = {}
+        self.lock = asyncio.Lock()
+
+    async def trigger_event(self, event_data: dict) -> None:
+        """
+        Processes an event that passed F-02 Relevance Filter:
+        1. Evaluates Cooldown rules.
+        2. Evaluates Token Age & Liquidity Floor hard filters.
+        3. Evaluates Sliding Window (AND/OR).
+        4. Invokes ML pipeline on trigger match.
+        """
+        wallet_address = event_data["wallet_address"]
+        token_mint = event_data["token_mint"]
+        signature = event_data["signature"]
+        timestamp = event_data.get("timestamp_utc") or datetime.now(timezone.utc)
+
+        # Ensure UTC timezone
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+
+        # 1. Cooldown Check
+        is_in_cooldown = await self._check_cooldown(wallet_address, token_mint)
+        if is_in_cooldown:
+            logger.info(
+                f"[TRIGGER ENGINE] [IGNORED] Signature: {signature}. "
+                f"Pair ({wallet_address}, {token_mint}) is currently in cooldown."
+            )
+            return
+
+        # 2. Hard Filters Check (Token Age & Liquidity Floor)
+        token_info = await self.token_info_service.get_token_info(token_mint)
+        if not self._passes_hard_filters(token_mint, token_info):
+            return
+
+        # 3. Sliding Window Evaluation (Thread-safe lock for in-memory states)
+        async with self.lock:
+            # Initialize list for this token
+            if token_mint not in self.window_events:
+                self.window_events[token_mint] = []
+
+            # Cleanup expired events from the window
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=settings.TRIGGER_WINDOW_MINUTES)
+            self.window_events[token_mint] = [
+                ev for ev in self.window_events[token_mint]
+                if (ev["timestamp"].replace(tzinfo=timezone.utc) if ev["timestamp"].tzinfo is None else ev["timestamp"]) > cutoff_time
+            ]
+
+            # Add current event to window
+            self.window_events[token_mint].append({
+                "wallet_address": wallet_address,
+                "timestamp": timestamp
+            })
+
+            # Check trigger condition
+            trigger_fired = False
+            confidence_boost = False
+            
+            if settings.TRIGGER_MODE == "OR":
+                # OR Mode: any single event triggers the pipeline immediately
+                trigger_fired = True
+                confidence_boost = False
+            elif settings.TRIGGER_MODE == "AND":
+                # AND Mode: unique wallets trading the same token within 5m window >= 2
+                unique_wallets = {ev["wallet_address"] for ev in self.window_events[token_mint]}
+                if len(unique_wallets) >= 2:
+                    trigger_fired = True
+                    confidence_boost = True
+
+            if trigger_fired:
+                logger.info(
+                    f"[TRIGGER ENGINE] [FIRED] Condition matched in {settings.TRIGGER_MODE} mode "
+                    f"for token {token_mint}. Triggering ML Pipeline Layer 2..."
+                )
+                
+                # Clear window for this token to prevent duplicate immediate triggers
+                self.window_events[token_mint] = []
+                
+                # 4. Trigger ML Pipeline
+                await self.ml_pipeline.analyze_token(
+                    token_address=token_mint,
+                    wallet_source=wallet_address,
+                    confidence_boost=confidence_boost
+                )
+                
+                # 5. Set Cooldown for this wallet/token pair
+                await self._set_cooldown(wallet_address, token_mint)
+
+    async def _check_cooldown(self, wallet_address: str, token_mint: str) -> bool:
+        cooldown = await self.cooldown_repo.get_cooldown(wallet_address, token_mint)
+        if cooldown:
+            last_ts = cooldown.last_trigger_ts
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - last_ts).total_seconds()
+            if elapsed < settings.COOLDOWN_SECONDS:
+                return True
+        return False
+
+    def _passes_hard_filters(self, token_mint: str, token_info: dict) -> bool:
+        age_minutes = token_info.get("age_minutes", 0.0)
+        liquidity_usd = token_info.get("liquidity_usd", 0.0)
+        symbol = token_info.get("token_symbol", "UNKNOWN")
+
+        # Age check
+        if age_minutes < settings.MIN_TOKEN_AGE_MINUTES:
+            logger.info(
+                f"[TRIGGER ENGINE] [REJECTED] Token {symbol} ({token_mint}) is too new: "
+                f"{age_minutes:.1f}m < {settings.MIN_TOKEN_AGE_MINUTES}m threshold."
+            )
+            return False
+
+        # Liquidity check
+        if liquidity_usd < settings.MIN_LIQUIDITY_USD:
+            logger.info(
+                f"[TRIGGER ENGINE] [REJECTED] Token {symbol} ({token_mint}) has low liquidity: "
+                f"${liquidity_usd:.2f} < ${settings.MIN_LIQUIDITY_USD} threshold."
+            )
+            return False
+
+        return True
+
+    async def _set_cooldown(self, wallet_address: str, token_mint: str) -> None:
+        cooldown = CooldownState(
+            wallet_address=wallet_address,
+            token_address=token_mint,
+            last_trigger_ts=datetime.now(timezone.utc),
+            active_position_id=None
+        )
+        await self.cooldown_repo.set_cooldown(cooldown)
+        logger.info(f"[TRIGGER ENGINE] Cooldown set for ({wallet_address}, {token_mint}) for {settings.COOLDOWN_SECONDS}s.")

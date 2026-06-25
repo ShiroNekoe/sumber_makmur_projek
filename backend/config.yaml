@@ -1,0 +1,55 @@
+# config.yaml — satu file, semua threshold operasional
+
+trigger_engine:
+  window_minutes: 5
+  mode: "OR" # AND | OR — lihat 01 · Arsitektur Sistem
+  min_token_age_minutes: 60
+  min_liquidity_usd: 5000.0
+  cooldown_seconds: 3600
+
+decision_gate:
+  confidence_threshold: 0.75
+
+risk:
+  risk_pct_per_trade: 0.01 # Fixed 1% dari equity
+
+trailing_tp:
+  tiers:
+    - {r_min: 1, r_max: 2, trail_pct: null} # SL tetap -1R
+    - {r_min: 2, r_max: 5, trail_pct: 0.25}  # Trails 25% dari puncak
+    - {r_min: 5, r_max: 10, trail_pct: 0.15} # Trails 15% dari puncak
+    - {r_min: 10, r_max: null, trail_pct: 0.10} # Trails 10% dari puncak
+
+labeling:
+  buy_benar_threshold_r: 3.0
+  salah_threshold_r: -1.0
+
+retrain:
+  schedule_utc: "02:00"
+  min_closed_trades_first: 100
+  min_closed_trades_alt: 50
+  min_buy_benar_in_alt: 15
+  rolling_window_days: 30
+  rollback_accuracy_drop_pct: 0.05
+
+kill_switch:
+  dev_wallet_sell_threshold_pct: 0.05 # % dari supply, contoh default 5%
+  slippage_spike_threshold_pct: 0.10   # contoh default 10%
+
+relevance_filter:
+  min_swap_amount_usd: 10.0
+  min_lp_change_usd: 1000.0
+  dex_routers:
+    - "6EF8rrect3EDQS425286575m1111111111111111" # pump.fun program
+    - "675k1aCcZ1V9et197Y21o5t3A8tFmgm5Rz2845m2u3" # Raydium AMM V4
+    - "9W959DqN2Xw009938b5F08Suj752b5F08Suj752b"  # Orca (dummy base58 key)
+    - "JUP6L2ZfF887328b5F08Suj752b5F08Suj752b"    # Jupiter (dummy base58 key)
+  custodial_exchanges:
+    - "BinanceCustodianAddress1111111111111111"
+    - "CoinbaseCustodianAddress2222222222222222"
+
+safety_check:
+  max_top_10_holders_share: 0.20
+  require_lp_locked: true
+  require_contract_verified: true
+  require_mint_authority_revoked: true
