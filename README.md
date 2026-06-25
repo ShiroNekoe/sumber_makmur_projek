@@ -6,39 +6,102 @@ Full-stack trading telemetry prototype with a FastAPI backend and a Vite React f
 
 - Python 3.10+
 - Node.js 20+ with npm
+- PowerShell (Windows)
 
 ## Backend Setup
+
+1. Buka terminal di folder root proyek:
+
+```powershell
+cd "C:\Users\lastico\OneDrive\Documents\sumber-makmur-hype-V.2"
+```
+
+2. Buat virtual environment dan aktifkan:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+```
+
+3. Install dependency backend:
+
+```powershell
 python -m pip install --upgrade pip
 pip install -r backend\requirements.txt
+```
+
+4. Copy file environment example ke file `.env` di folder backend:
+
+```powershell
 Copy-Item backend\.env.example backend\.env
+```
+
+5. Jalankan backend dengan Uvicorn:
+
+```powershell
 uvicorn app.main:app --reload --app-dir backend
 ```
 
-Backend defaults:
+6. Backend akan tersedia di:
 
-- API: `http://localhost:8000`
-- Health: `http://localhost:8000/health`
+- API root: `http://localhost:8000`
+- Health endpoint: `http://localhost:8000/health`
 - Versioned API: `http://localhost:8000/api/v1`
 - WebSocket: `ws://localhost:8000/ws`
 
 ## Frontend Setup
 
+1. Buka terminal baru di folder frontend:
+
 ```powershell
-cd frontend
+cd "C:\Users\lastico\OneDrive\Documents\sumber-makmur-hype-V.2\frontend"
+```
+
+2. Install dependency frontend:
+
+```powershell
 npm ci
+```
+
+3. Copy file environment example ke file `.env` di folder frontend:
+
+```powershell
 Copy-Item .env.example .env
+```
+
+4. Jalankan frontend development server:
+
+```powershell
 npm run dev
 ```
 
-Frontend default:
+5. Akses aplikasi di browser:
 
-- App: `http://localhost:5173`
+- Frontend: `http://localhost:5173`
 
-## Verification
+## Environment Variables
+
+- Backend: `backend\.env`
+- Frontend: `frontend\.env`
+
+Default frontend env values:
+
+```text
+VITE_API_BASE_URL=http://localhost:8000/api/v1
+VITE_WS_BASE_URL=ws://localhost:8000/ws
+```
+
+## Menjalankan Proyek
+
+Untuk menjalankan keseluruhan proyek, jalankan backend dan frontend di dua terminal terpisah:
+
+1. Jalankan backend di terminal pertama.
+2. Jalankan frontend di terminal kedua.
+3. Buka `http://localhost:5173` di browser.
+
+## Verifikasi
+
+Jika ingin memastikan setup berfungsi:
 
 ```powershell
 python -m compileall backend\app
@@ -47,6 +110,8 @@ npm run typecheck
 npm run build
 ```
 
-## Repository Hygiene
+## Catatan
 
-Generated folders such as `node_modules`, `.venv`, `__pycache__`, `dist`, and local `.env` files are intentionally ignored. Install dependencies locally from the lockfile and requirements file instead of committing generated dependency folders.
+- Pastikan `frontend\node_modules` tidak dikomit ke repositori.
+- Gunakan `Copy-Item` untuk membuat file `.env` dari file `.env.example`.
+- Data SQLite dan file konfigurasi lokal tidak perlu didorong ke Git kecuali sengaja ingin disimpan.
