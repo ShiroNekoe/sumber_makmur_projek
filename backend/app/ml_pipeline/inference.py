@@ -153,9 +153,11 @@ class XGBoostInferenceEngine(IXGBoostInferenceEngine):
     def __init__(
         self,
         model_registry_repo: IModelRegistryRepository,
+        trade_history_repo: Optional[ITradeHistoryRepository] = None,
         models_dir: str = "models"
     ):
         self.model_registry_repo = model_registry_repo
+        self.trade_history_repo = trade_history_repo
         self.models_dir = models_dir
         self.model = None
         self.current_model_version = None
@@ -320,6 +322,63 @@ class XGBoostInferenceEngine(IXGBoostInferenceEngine):
         
         await self.model_registry_repo.add_model_version(registry_entry)
         
+        # Populate the database with the bootstrap trades if trade_history_repo is available
+        if self.trade_history_repo:
+            from app.domain.models import ClosedTrade
+            import uuid
+            for i in range(n_samples):
+                label_val = int(labels[i])
+                if label_val == 1:
+                    direction = "BUY"
+                    label_str = "BUY_BENAR"
+                    r_mult = 3.5
+                    pnl = 3.5 * settings.RISK_PCT_PER_TRADE
+                elif label_val == 2:
+                    direction = "BUY"
+                    label_str = "SALAH"
+                    r_mult = -1.2
+                    pnl = -1.2 * settings.RISK_PCT_PER_TRADE
+                else:
+                    direction = "BUY"
+                    label_str = "HOLD"
+                    r_mult = 0.5
+                    pnl = 0.5 * settings.RISK_PCT_PER_TRADE
+                
+                # Deterministic random time within past 30 days
+                signal_time = datetime.now(timezone.utc) - timedelta(
+                    days=int(30 - (i * 0.2)),
+                    hours=int(i % 24),
+                    minutes=int((i * 7) % 60)
+                )
+                entry_time = signal_time + timedelta(minutes=1)
+                exit_time = entry_time + timedelta(minutes=int(hold_time[i]))
+                
+                trade = ClosedTrade(
+                    trade_id=f"bt_{uuid.uuid4().hex[:8]}",
+                    wallet_source=settings.TARGET_WALLETS[i % len(settings.TARGET_WALLETS)],
+                    token_address=f"token_bt_{i}xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                    token_symbol=f"BTK_{i}",
+                    signal_ts=signal_time,
+                    entry_ts=entry_time,
+                    exit_ts=exit_time,
+                    direction=direction,
+                    confidence_score=0.85,
+                    safety_check_passed=True,
+                    entry_price=1.0,
+                    exit_price=1.0 + pnl,
+                    position_size_usd=float(pos_size[i]),
+                    risk_pct=settings.RISK_PCT_PER_TRADE,
+                    pnl_pct_actual=pnl,
+                    r_multiple=r_mult,
+                    label=label_str,
+                    holding_time_minutes=int(hold_time[i]),
+                    exit_reason="manual",
+                    is_paper_trade=True,
+                    is_bootstrap=True,
+                    model_version="v0"
+                )
+                await self.trade_history_repo.add_closed_trade(trade)
+
         self.model = model
         self.current_model_version = "v0"
         logger.info("[XGBOOST ENGINE] Auto-Bootstrap complete. Model v0 trained, registered, and activated.")

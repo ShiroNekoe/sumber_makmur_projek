@@ -130,8 +130,22 @@ async def get_open_positions(request: Request = None):
     """Returns all currently open positions from the SQLite database."""
     try:
         query_service = _get_query_service(request)
-        # F-08/F-09 will populate open_positions; for now return empty (no execution engine yet)
-        return PositionListResponse(positions=[], total=0)
+        raw_positions = await query_service.get_open_positions()
+        positions = []
+        for p in raw_positions:
+            positions.append(PositionResponse(
+                position_id=p.position_id,
+                token_address=p.token_address,
+                token_short=_partial_address(p.token_address),
+                wallet_source=p.wallet_source,
+                wallet_short=_partial_address(p.wallet_source),
+                state=p.state,
+                position_size_usd=p.position_size_usd,
+                confidence_score=p.confidence_score,
+                model_version=p.model_version,
+                entry_ts=p.entry_ts
+            ))
+        return PositionListResponse(positions=positions, total=len(positions))
     except HTTPException:
         raise
     except Exception as e:

@@ -157,6 +157,9 @@ class SafetyCheckGate(ITokenSafetyCheckGate):
         token_address = prediction.token_address
         signature = prediction.signature
         
+        from app.use_cases.dashboard_query import append_signal_event
+        import asyncio
+        
         # Check overall routing logic
         if safety_result.passed:
             # Check confidence score vs settings threshold
@@ -173,7 +176,13 @@ class SafetyCheckGate(ITokenSafetyCheckGate):
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 logger.info(f"[SAFETY GATE] [PASSED & FIRED] Emitted alert signal for {token_address}!")
+                append_signal_event(alert_signal)
                 await ws_manager.broadcast(alert_signal)
+                
+                # F-08: Trigger Auto Trade Execution
+                auto_executor = getattr(self, "auto_trade_executor", None)
+                if auto_executor:
+                    asyncio.create_task(auto_executor.execute_trade(prediction, feature_vector=None)) # FeatureVector is passed as None or can be reconstructed if needed
             else:
                 # Low confidence
                 log_signal = {
@@ -188,6 +197,7 @@ class SafetyCheckGate(ITokenSafetyCheckGate):
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 logger.info(f"[SAFETY GATE] [LOG ONLY] Confidence too low for {token_address}: {prediction.confidence_score:.4f}")
+                append_signal_event(log_signal)
                 # Log audit info
                 await self._log_audit(prediction, f"low_confidence: {prediction.confidence_score:.4f}")
         else:
@@ -204,6 +214,7 @@ class SafetyCheckGate(ITokenSafetyCheckGate):
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             logger.info(f"[SAFETY GATE] [BLOCKED] Token safety check failed for {token_address}. Reason: {safety_result.reason}")
+            append_signal_event(log_signal)
             # Log audit info
             await self._log_audit(prediction, f"safety_failed: {safety_result.reason}")
 

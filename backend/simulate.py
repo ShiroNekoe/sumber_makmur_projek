@@ -1,14 +1,73 @@
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+import re
+import os
+from datetime import datetime, timezone, timedelta
 
-# Configure logging to console output
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+# Reconfigure stdout/stderr to UTF-8 to prevent cp1252 encoding crashes on Windows
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+# ANSI Colors
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+CYAN = "\033[96m"
+MAGENTA = "\033[95m"
+BLUE = "\033[94m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+
+class ColoredFormatter(logging.Formatter):
+    """Custom logging formatter to style and colorize terminal telemetry."""
+    def format(self, record):
+        time_str = f"{BLUE}{self.formatTime(record, '%H:%M:%S')}{RESET}"
+        
+        # Colorize levels and prepend emojis
+        if record.levelno == logging.WARNING:
+            level_str = f"{YELLOW}[WARNING] ⚠️{RESET}"
+        elif record.levelno >= logging.ERROR:
+            level_str = f"{RED}[ERROR] ❌{RESET}"
+        else:
+            level_str = f"{GREEN}[INFO] ℹ️{RESET}"
+
+        msg = record.getMessage()
+
+        # Regex replace for system component tags
+        msg = re.sub(r"\[TRIGGER ENGINE\]", f"{CYAN}[TRIGGER ENGINE] ⚙️{RESET}", msg)
+        msg = re.sub(r"\[RELEVANCE FILTER\]", f"{CYAN}[RELEVANCE FILTER] 🔍{RESET}", msg)
+        msg = re.sub(r"\[SAFETY GATE\]", f"{MAGENTA}[SAFETY GATE] 🛡️{RESET}", msg)
+        msg = re.sub(r"\[ML PIPELINE\]", f"{MAGENTA}[ML PIPELINE] 🚀{RESET}", msg)
+        msg = re.sub(r"\[XGBOOST ENGINE\]", f"{MAGENTA}[XGBOOST ENGINE] 🤖{RESET}", msg)
+        msg = re.sub(r"\[PROTECTION\]", f"{RED}[PROTECTION] 🔒{RESET}", msg)
+        msg = re.sub(r"\[AUTO TRADE\]", f"{GREEN}[AUTO TRADE] 💸{RESET}", msg)
+        msg = re.sub(r"\[SIMULATOR\]", f"{YELLOW}[SIMULATOR] 🔮{RESET}", msg)
+        msg = re.sub(r"\[TOKEN SERVICE\]", f"{CYAN}[TOKEN SERVICE] 🌐{RESET}", msg)
+        msg = re.sub(r"\[FEATURE EXTRACTOR\]", f"{CYAN}[FEATURE EXTRACTOR] 📋{RESET}", msg)
+        msg = re.sub(r"\[XGBOOST INFERENCE\]", f"{MAGENTA}[XGBOOST INFERENCE] 🧠{RESET}", msg)
+
+        # Highlight whale names, amounts, and actions
+        msg = re.sub(r"(Whale[A-Za-z0-9]+|Wha1e[A-Za-z0-9]+)", f"{YELLOW}\\1{RESET}", msg)
+        msg = re.sub(r"(\$[0-9\.,]+)", f"{GREEN}{BOLD}\\1{RESET}", msg)
+        msg = re.sub(r"(passed|PASSED|success|confirmed|CONFIRMED|FIRED)", f"{GREEN}{BOLD}\\1{RESET}", msg)
+        msg = re.sub(r"(failed|FAILED|blocked|BLOCKED|timeout|TIMEOUT)", f"{RED}{BOLD}\\1{RESET}", msg)
+        
+        # Colorize tokens addresses
+        msg = re.sub(r"([1-9A-HJ-NP-Za-km-z]{6}\.\.\.[1-9A-HJ-NP-Za-km-z]{4}|[1-9A-HJ-NP-Za-km-z]{32,44})", f"{CYAN}\\1{RESET}", msg)
+
+        return f"{time_str} {level_str} {msg}"
+
+
+# Configure root logger with the custom ColoredFormatter
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(ColoredFormatter())
+root_logger.addHandler(handler)
 
 from app.core.config import settings
 from app.infrastructure.database.session import SessionLocal, Base, engine
@@ -17,7 +76,8 @@ from app.infrastructure.database.repository import (
     SQLAlchemyFilterLogRepository,
     SQLAlchemyCooldownRepository,
     SQLAlchemyTradeHistoryRepository,
-    SQLAlchemyModelRegistryRepository
+    SQLAlchemyModelRegistryRepository,
+    SQLAlchemyPositionRepository
 )
 from app.blockchain.monitor import SolanaMonitorSimulator
 from app.infrastructure.blockchain.token_service import SolanaTokenInfoService, SolanaTokenSafetyService
@@ -32,13 +92,14 @@ logger = logging.getLogger("simulation")
 
 class ConsoleMLPipeline(IMLPipeline):
     async def analyze_token(self, token_address: str, wallet_source: str, confidence_boost: bool) -> None:
-        print(f"\n🚀 [ML PIPELINE] [TRIGGERED] Token: {token_address} from wallet: {wallet_source} (boost: {confidence_boost})\n")
+        print(f"\n🚀 {MAGENTA}{BOLD}[ML PIPELINE] [TRIGGERED]{RESET} Token: {CYAN}{token_address}{RESET} from wallet: {YELLOW}{wallet_source}{RESET} (boost: {confidence_boost})\n")
 
 
 async def main():
-    print("====================================================")
-    print("=== STARTING SUMBER MAKMUR PIPELINE SIMULATION ===")
-    print("====================================================")
+    print(f"\n{CYAN}{BOLD}+--------------------------------------------------------+{RESET}")
+    print(f"{CYAN}{BOLD}|          AI SMART MONEY TRADING SYSTEM MONITOR         |{RESET}")
+    print(f"{CYAN}{BOLD}|                   - SIMULATOR MODE -                   |{RESET}")
+    print(f"{CYAN}{BOLD}+--------------------------------------------------------+{RESET}\n")
     
     # Initialize DB tables
     Base.metadata.create_all(bind=engine)
@@ -49,6 +110,7 @@ async def main():
     cooldown_repo = SQLAlchemyCooldownRepository(db)
     trade_history_repo = SQLAlchemyTradeHistoryRepository(db)
     model_registry_repo = SQLAlchemyModelRegistryRepository(db)
+    position_repo = SQLAlchemyPositionRepository(db)
     
     # Make sure we use base58-valid targets
     settings.TARGET_WALLETS = [
@@ -77,6 +139,7 @@ async def main():
     token_info_service = SolanaTokenInfoService()
     safety_service = SolanaTokenSafetyService()
     safety_check_gate = SafetyCheckGate(safety_service, filter_log_repo)
+    
     from app.main import StubMLPipeline
     ml_pipeline = StubMLPipeline(
         trade_history_repo=trade_history_repo,
@@ -84,6 +147,16 @@ async def main():
         model_registry_repo=model_registry_repo,
         safety_check_gate=safety_check_gate
     )
+    
+    # Enable automatic trade execution in safety gate for simulations
+    from app.use_cases.auto_trade_executor import AutoTradeExecutor
+    auto_trade_executor = AutoTradeExecutor(
+        position_repo=position_repo,
+        cooldown_repo=cooldown_repo,
+        model_registry_repo=model_registry_repo,
+        trade_history_repo=trade_history_repo
+    )
+    safety_check_gate.auto_trade_executor = auto_trade_executor
     
     trigger_engine = TriggerEngine(
         cooldown_repo=cooldown_repo,
@@ -103,14 +176,14 @@ async def main():
     monitor_use_case = MonitorWalletsUseCase(wallet_repo, monitor, relevance_filter)
     await monitor_use_case.initialize_and_start()
     
-    print("\nSimulation is running successfully. Sinyal tiruan akan masuk setiap 15-30 detik.")
-    print("Press Ctrl+C to stop the simulation.\n")
+    print(f"{GREEN}{BOLD}Simulation is running successfully. Sinyal tiruan akan masuk setiap 15-30 detik.{RESET}")
+    print(f"{YELLOW}Press Ctrl+C to stop the simulation.{RESET}\n")
     
     try:
         while True:
             await asyncio.sleep(1)
     except KeyboardInterrupt:
-        print("\nStopping simulation...")
+        print(f"\n{YELLOW}Stopping simulation...{RESET}")
     finally:
         await monitor_use_case.stop()
         db.close()

@@ -175,6 +175,7 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
             holding_time_minutes=orm.holding_time_minutes,
             exit_reason=orm.exit_reason,
             is_paper_trade=orm.is_paper_trade,
+            is_bootstrap=orm.is_bootstrap or False,
             model_version=orm.model_version
         )
 
@@ -207,6 +208,7 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
             holding_time_minutes=trade.holding_time_minutes,
             exit_reason=trade.exit_reason,
             is_paper_trade=trade.is_paper_trade,
+            is_bootstrap=trade.is_bootstrap,
             model_version=trade.model_version
         )
         self.db.add(orm)

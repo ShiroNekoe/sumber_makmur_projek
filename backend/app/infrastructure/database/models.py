@@ -70,6 +70,7 @@ class ClosedTradeORM(Base):
     holding_time_minutes = Column(Integer, nullable=False)
     exit_reason = Column(String, nullable=False)  # e.g., 'SL', 'trailing_tp', 'kill_switch_lp'
     is_paper_trade = Column(Boolean, nullable=False)
+    is_bootstrap = Column(Boolean, default=False, nullable=True)
     model_version = Column(String, ForeignKey("model_registry.model_version"), nullable=False)
 
     wallet = relationship("WatchlistWalletORM")

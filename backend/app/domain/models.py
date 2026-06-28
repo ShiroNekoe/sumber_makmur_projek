@@ -49,6 +49,7 @@ class ClosedTrade(BaseModel):
     holding_time_minutes: int
     exit_reason: str  # 'SL' | 'trailing_tp' | 'kill_switch_lp' | 'kill_switch_dev_dump' | 'kill_switch_slippage' | 'manual' | 'liquidity_exhausted'
     is_paper_trade: bool
+    is_bootstrap: bool = False
     model_version: str
 
 

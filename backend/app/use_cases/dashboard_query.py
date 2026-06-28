@@ -11,6 +11,8 @@ from app.core.config import settings
 from app.domain.interfaces import (
     ITradeHistoryRepository,
     IWalletRepository,
+    IPositionRepository,
+    IModelRegistryRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,9 +46,13 @@ class DashboardQueryService:
         self,
         trade_history_repo: ITradeHistoryRepository,
         wallet_repo: IWalletRepository,
+        position_repo: Optional[IPositionRepository] = None,
+        model_registry_repo: Optional[IModelRegistryRepository] = None,
     ):
         self.trade_history_repo = trade_history_repo
         self.wallet_repo = wallet_repo
+        self.position_repo = position_repo
+        self.model_registry_repo = model_registry_repo
 
     async def get_recent_signals(self, hours: int = 24) -> List[dict]:
         """
@@ -70,6 +76,16 @@ class DashboardQueryService:
             logger.error(f"[DASHBOARD QUERY] Error fetching recent signals: {e}")
             return []
 
+    async def get_open_positions(self) -> List:
+        """Return all currently open positions from the database."""
+        try:
+            if self.position_repo:
+                return await self.position_repo.get_open_positions()
+            return []
+        except Exception as e:
+            logger.error(f"[DASHBOARD QUERY] Error fetching open positions: {e}")
+            return []
+
     async def get_recent_trades(self, limit: int = 50) -> List:
         """
         Return most recent closed trades from the database.
@@ -87,6 +103,15 @@ class DashboardQueryService:
         Aggregate dashboard statistics.
         Returns defaults on partial failure to ensure dashboard always loads.
         """
+        active_model_ver = "v0"
+        if self.model_registry_repo:
+            try:
+                active_model = await self.model_registry_repo.get_active_model()
+                if active_model:
+                    active_model_ver = active_model.model_version
+            except Exception:
+                pass
+
         stats = {
             "win_rate_pct": None,
             "total_closed_trades": 0,
@@ -96,7 +121,7 @@ class DashboardQueryService:
             "total_signals_24h": 0,
             "open_positions_count": 0,
             "confidence_threshold_pct": round(settings.CONFIDENCE_THRESHOLD * 100, 1),
-            "active_model_version": "v0 (Bootstrap)",
+            "active_model_version": active_model_ver,
         }
         try:
             trades = await self.trade_history_repo.get_closed_trades(limit=500, offset=0)
@@ -117,6 +142,13 @@ class DashboardQueryService:
             stats["alerts_fired_24h"] = len([s for s in recent_signals if s.get("event") == "ALERT"])
         except Exception as e:
             logger.warning(f"[DASHBOARD QUERY] Signal stats error: {e}")
+
+        try:
+            if self.position_repo:
+                open_pos = await self.position_repo.get_open_positions()
+                stats["open_positions_count"] = len(open_pos)
+        except Exception as e:
+            logger.warning(f"[DASHBOARD QUERY] Open positions stats error: {e}")
 
         return stats
 
