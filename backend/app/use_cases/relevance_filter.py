@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -26,11 +27,15 @@ class RelevanceFilter(IRelevanceFilter):
         self,
         filter_log_repo: IFilterLogRepository,
         trigger_engine: ITriggerEngine,
-        wallet_repo: IWalletRepository
+        wallet_repo: IWalletRepository,
+        wallet_discovery_service = None,
+        hard_filter = None
     ):
         self.filter_log_repo = filter_log_repo
         self.trigger_engine = trigger_engine
         self.wallet_repo = wallet_repo
+        self.wallet_discovery_service = wallet_discovery_service
+        self.hard_filter = hard_filter
 
     async def process_event(self, event_data: dict) -> None:
         """
@@ -124,8 +129,15 @@ class RelevanceFilter(IRelevanceFilter):
                     f"[RELEVANCE FILTER] [PASSED] Signature: {signature}. "
                     f"Wallet {wallet_address} {event_type} event passed. Reason: {reason}"
                 )
-                # Forward to Trigger Engine (F-03)
-                await self.trigger_engine.trigger_event(event_data)
+                # Trigger Dynamic Wallet Discovery (F-12)
+                if self.wallet_discovery_service is not None:
+                    asyncio.create_task(self.wallet_discovery_service.discover_wallets(event_data))
+
+                # Forward to Hard Filter (F-13) if present, otherwise directly to Trigger Engine (F-03)
+                if self.hard_filter is not None:
+                    await self.hard_filter.process_event(event_data)
+                else:
+                    await self.trigger_engine.trigger_event(event_data)
             else:
                 logger.info(
                     f"[RELEVANCE FILTER] [FILTERED] Signature: {signature}. "

@@ -43,8 +43,28 @@ class SolanaTokenInfoService(ITokenInfoService):
                 logger.info(f"[TOKEN SERVICE] [CACHE HIT] Using cached data for {token_address}")
                 return cached_data
 
-        # Attempt API request to DexScreener
-        token_info = await self._fetch_from_dexscreener(token_address)
+        # Attempt API request to DexScreener with retry 1x (F-19)
+        token_info = None
+        for attempt in range(2):
+            try:
+                token_info = await asyncio.wait_for(self._fetch_from_dexscreener(token_address), timeout=5.0)
+                if token_info:
+                    break
+            except Exception as e:
+                logger.warning(f"[TOKEN SERVICE] DexScreener fetch attempt {attempt+1} failed: {e}")
+                if attempt == 1:
+                    # Log safety API timeout error
+                    from app.core.error_handler import log_system_error, ErrorType, ErrorSeverity
+                    asyncio.create_task(log_system_error(
+                        error_type=ErrorType.SAFETY_API_TIMEOUT,
+                        severity=ErrorSeverity.ERROR,
+                        context=f"DexScreener API timeout/failure for token {token_address}: {e}",
+                        recovery_action="fail_closed: block trade entry",
+                        resolution_status="failed"
+                    ))
+                    raise e
+                await asyncio.sleep(0.5)
+
         if token_info:
             self.cache[token_address] = (time.time(), token_info)
             return token_info
@@ -59,7 +79,8 @@ class SolanaTokenInfoService(ITokenInfoService):
             "age_minutes": 120.0,          # 2 hours old
             "liquidity_usd": 15000.0,      # $15k liquidity
             "volume_24h": 3000.0,          # $3k volume
-            "token_symbol": "MOCK_TOKEN"
+            "token_symbol": "MOCK_TOKEN",
+            "price_usd": 1.0
         }
         # Cache the fallback data temporarily too to avoid spamming failed requests
         self.cache[token_address] = (time.time(), fallback_data)
@@ -113,12 +134,14 @@ class SolanaTokenInfoService(ITokenInfoService):
                 age_minutes = 60.0  # default fallback
                 
             token_symbol = main_pair.get("baseToken", {}).get("symbol", "UNKNOWN")
+            price_usd = float(main_pair.get("priceUsd") or 0.0)
 
             return {
                 "age_minutes": age_minutes,
                 "liquidity_usd": liquidity_usd,
                 "volume_24h": volume_24h,
-                "token_symbol": token_symbol
+                "token_symbol": token_symbol,
+                "price_usd": price_usd
             }
         except Exception as e:
             logger.error(f"Error parsing DexScreener payload: {e}")
@@ -184,16 +207,29 @@ class SolanaTokenSafetyService(ITokenSafetyService):
                 "mint_authority_revoked": True
             }
 
-        # 2. Production DexScreener Fetch
-        try:
-            info = await asyncio.wait_for(self._fetch_safety_from_api(token_address), timeout=5.0)
-            if info:
-                return info
-        except asyncio.TimeoutError:
-            logger.error(f"[TOKEN SAFETY] DexScreener safety API call timed out for {token_address}")
-            raise TimeoutError("Safety API call timed out")
-        except Exception as e:
-            logger.error(f"[TOKEN SAFETY] DexScreener safety API call failed: {e}")
+        # 2. Production DexScreener Fetch with retry 1x (F-19)
+        info = None
+        for attempt in range(2):
+            try:
+                info = await asyncio.wait_for(self._fetch_safety_from_api(token_address), timeout=5.0)
+                if info:
+                    return info
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"[TOKEN SAFETY] DexScreener safety API attempt {attempt+1} failed: {e}")
+                if attempt == 1:
+                    # Log safety API timeout error
+                    from app.core.error_handler import log_system_error, ErrorType, ErrorSeverity
+                    asyncio.create_task(log_system_error(
+                        error_type=ErrorType.SAFETY_API_TIMEOUT,
+                        severity=ErrorSeverity.ERROR,
+                        context=f"DexScreener safety API timeout/failure for token {token_address}: {e}",
+                        recovery_action="fail_closed: block trade entry",
+                        resolution_status="failed"
+                    ))
+                    if isinstance(e, asyncio.TimeoutError):
+                        raise TimeoutError("Safety API call timed out")
+                    raise e
+                await asyncio.sleep(0.5)
 
         # Resilient offline fallback if API fails
         logger.warning(

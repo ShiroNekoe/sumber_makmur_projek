@@ -153,26 +153,67 @@ class DashboardQueryService:
         return stats
 
     async def get_system_status(self) -> dict:
-        """Return current system health status."""
+        """Return current system health status (F-15 Dynamic Status)."""
+        from app.blockchain.monitor import SolanaWebSocketMonitor
+
+        state = SolanaWebSocketMonitor.rpc_state
+        degraded = SolanaWebSocketMonitor.degraded_mode
+
+        overall_status = "healthy"
+        rpc_status = state  # 'primary' | 'secondary' | 'degraded'
+
+        wallet_monitor_status = "running"
+        wallet_monitor_detail = f"Listening for on-chain events on Primary RPC: {SolanaWebSocketMonitor.current_rpc_url}"
+        
+        trigger_engine_status = "running"
+        trigger_engine_detail = "5-min window active"
+
+        if state == "secondary":
+            overall_status = "warning"
+            wallet_monitor_detail = f"Primary failed. Failover to Secondary RPC active: {SolanaWebSocketMonitor.current_rpc_url}"
+        elif state == "degraded" or degraded:
+            overall_status = "degraded"
+            rpc_status = "degraded"
+            wallet_monitor_status = "degraded"
+            wallet_monitor_detail = "RPC connection failed. Active open positions polled via REST every 30s."
+            trigger_engine_status = "stopped"
+            trigger_engine_detail = "Degraded Mode: new trigger pipeline disabled."
+
         components = [
-            {"name": "Wallet Monitor", "status": "running", "detail": "Listening for on-chain events"},
+            {"name": "Wallet Monitor", "status": wallet_monitor_status, "detail": wallet_monitor_detail},
             {"name": "Relevance Filter", "status": "running", "detail": "F-02 active"},
-            {"name": "Trigger Engine", "status": "running", "detail": "5-min window active"},
+            {"name": "Trigger Engine", "status": trigger_engine_status, "detail": trigger_engine_detail},
             {"name": "Feature Extractor", "status": "running", "detail": "12+ features"},
             {"name": "XGBoost Engine", "status": "running", "detail": "Model v0 loaded"},
             {"name": "Safety Gate", "status": "running", "detail": "4-criteria check active"},
         ]
+
         return {
-            "overall_status": "healthy",
-            "rpc_status": "simulation",
+            "overall_status": overall_status,
+            "rpc_status": rpc_status,
             "components": components,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
     async def get_wallet_candidates(self) -> List[dict]:
         """
-        Return wallet candidates awaiting approval (F-12 placeholder).
-        Returns empty list until F-12 Dynamic Wallet Discovery is implemented.
+        Return wallet candidates awaiting approval (F-12).
+        Queries watchlist_wallets table for source='auto_discovered'.
         """
-        # F-12 integration point: when F-12 is implemented, query its repository here
-        return []
+        try:
+            all_wallets = await self.wallet_repo.get_all_wallets()
+            candidates = []
+            for w in all_wallets:
+                if w.source == "auto_discovered":
+                    candidates.append({
+                        "wallet_address": w.wallet_address,
+                        "label": w.label,
+                        "source": w.source,
+                        "discovery_reason": f"Smart Money correlation (Status: {w.status})",
+                        "discovered_at": w.added_at,
+                        "status": w.status or "pending"
+                    })
+            return candidates
+        except Exception as e:
+            logger.error(f"[DASHBOARD QUERY] Error fetching wallet candidates: {e}")
+            return []

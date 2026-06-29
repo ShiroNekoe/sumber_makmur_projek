@@ -88,7 +88,7 @@ class ConnectionManager:
             "ALERT": "signal_new",
             "LOG_ONLY": "signal_new",
         }
-        ws_event_type = type_map.get(event_type, "signal_new")
+        ws_event_type = type_map.get(event_type, event_type)
 
         await self.broadcast_event(ws_event_type, message)
 

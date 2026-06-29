@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from app.core.config import settings
-from app.domain.interfaces import ITriggerEngine, ICooldownRepository, ITokenInfoService, IMLPipeline
+from app.domain.interfaces import ITriggerEngine, ICooldownRepository, ITokenInfoService, IMLPipeline, IPositionRepository
 from app.domain.models import CooldownState
 
 logger = logging.getLogger(__name__)
@@ -19,11 +19,13 @@ class TriggerEngine(ITriggerEngine):
         self,
         cooldown_repo: ICooldownRepository,
         token_info_service: ITokenInfoService,
-        ml_pipeline: IMLPipeline
+        ml_pipeline: IMLPipeline,
+        position_repo: Optional[IPositionRepository] = None
     ):
         self.cooldown_repo = cooldown_repo
         self.token_info_service = token_info_service
         self.ml_pipeline = ml_pipeline
+        self.position_repo = position_repo
         
         # Sliding Window Storage: token_mint -> List of event dicts
         self.window_events: Dict[str, List[dict]] = {}
@@ -33,10 +35,13 @@ class TriggerEngine(ITriggerEngine):
         """
         Processes an event that passed F-02 Relevance Filter:
         1. Evaluates Cooldown rules.
-        2. Evaluates Token Age & Liquidity Floor hard filters.
-        3. Evaluates Sliding Window (AND/OR).
-        4. Invokes ML pipeline on trigger match.
         """
+        # F-15 Degraded Mode Check
+        from app.blockchain.monitor import SolanaWebSocketMonitor
+        if SolanaWebSocketMonitor.degraded_mode:
+            logger.warning("[TRIGGER ENGINE] [BLOCKED] Degraded mode active. Discarding new trigger event.")
+            return
+
         wallet_address = event_data["wallet_address"]
         token_mint = event_data["token_mint"]
         signature = event_data["signature"]
@@ -55,10 +60,11 @@ class TriggerEngine(ITriggerEngine):
             )
             return
 
-        # 2. Hard Filters Check (Token Age & Liquidity Floor)
-        token_info = await self.token_info_service.get_token_info(token_mint)
-        if not self._passes_hard_filters(token_mint, token_info):
-            return
+        # 2. Hard Filters Check (Token Age & Liquidity Floor) - Skip if F-13 already processed this event
+        if "token_age_minutes" not in event_data or "liquidity_pool_depth" not in event_data:
+            token_info = await self.token_info_service.get_token_info(token_mint)
+            if not self._passes_hard_filters(token_mint, token_info):
+                return
 
         # 3. Sliding Window Evaluation (Thread-safe lock for in-memory states)
         async with self.lock:
@@ -115,14 +121,34 @@ class TriggerEngine(ITriggerEngine):
 
     async def _check_cooldown(self, wallet_address: str, token_mint: str) -> bool:
         cooldown = await self.cooldown_repo.get_cooldown(wallet_address, token_mint)
-        if cooldown:
+        if not cooldown:
+            return False
+
+        # If active_position_id is linked, check if the position is still active
+        if cooldown.active_position_id:
+            if self.position_repo:
+                pos = await self.position_repo.get_position(cooldown.active_position_id)
+                if pos and pos.state in ["OPEN", "PENDING_ENTRY", "EXITING"]:
+                    return True
+                else:
+                    # Position closed or failed, reset cooldown
+                    logger.info(f"[TRIGGER ENGINE] Cooldown reset: linked position {cooldown.active_position_id} is closed.")
+                    await self.cooldown_repo.delete_cooldown(wallet_address, token_mint)
+                    return False
+            # Fallback if position_repo not injected
+            return True
+        else:
+            # Active position is None (pending execution phase). Use a 5-minute timeout.
             last_ts = cooldown.last_trigger_ts
             if last_ts.tzinfo is None:
                 last_ts = last_ts.replace(tzinfo=timezone.utc)
             elapsed = (datetime.now(timezone.utc) - last_ts).total_seconds()
-            if elapsed < settings.COOLDOWN_SECONDS:
+            if elapsed < 300.0:  # 5 minutes pending window
                 return True
-        return False
+            else:
+                logger.warning(f"[TRIGGER ENGINE] Cooldown pending timeout for ({wallet_address}, {token_mint}). Resetting.")
+                await self.cooldown_repo.delete_cooldown(wallet_address, token_mint)
+                return False
 
     def _passes_hard_filters(self, token_mint: str, token_info: dict) -> bool:
         age_minutes = token_info.get("age_minutes", 0.0)
@@ -155,4 +181,4 @@ class TriggerEngine(ITriggerEngine):
             active_position_id=None
         )
         await self.cooldown_repo.set_cooldown(cooldown)
-        logger.info(f"[TRIGGER ENGINE] Cooldown set for ({wallet_address}, {token_mint}) for {settings.COOLDOWN_SECONDS}s.")
+        logger.info(f"[TRIGGER ENGINE] Cooldown initialized for ({wallet_address}, {token_mint}).")

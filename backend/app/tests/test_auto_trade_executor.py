@@ -82,10 +82,35 @@ class TestAutoTradeExecutor(unittest.IsolatedAsyncioTestCase):
         self.mock_cooldown_repo.set_cooldown.assert_called_once()
 
     async def test_correlation_cap_blocked(self):
-        # Mock 3 open positions (cap reached)
-        self.mock_position_repo.get_open_positions = AsyncMock(return_value=[
-            MagicMock(spec=OpenPosition), MagicMock(spec=OpenPosition), MagicMock(spec=OpenPosition)
-        ])
+        # Mock settings to have custom cap of 2 positions
+        from app.core.config import settings
+        original_cap = settings.RISK_MAX_CONCURRENT_POSITIONS
+        settings.RISK_MAX_CONCURRENT_POSITIONS = 2
+        
+        try:
+            # Mock 2 open positions (cap reached)
+            self.mock_position_repo.get_open_positions = AsyncMock(return_value=[
+                MagicMock(spec=OpenPosition), MagicMock(spec=OpenPosition)
+            ])
+            open_pos = await self.executor.execute_trade(self.pred, self.fv)
+            self.assertIsNone(open_pos)
+            self.mock_position_repo.add_position.assert_not_called()
+
+            # Verify WebSocket broadcast was called with formatted envelope
+            ws_manager.broadcast.assert_called_once()
+            called_args = ws_manager.broadcast.call_args[0][0]
+            self.assertEqual(called_args["type"], "position_cap_reached")
+            self.assertEqual(called_args["data"]["open_count"], 2)
+            self.assertEqual(called_args["data"]["max_count"], 2)
+            self.assertEqual(called_args["data"]["event"], "POSITION_CAP_REACHED")
+        finally:
+            settings.RISK_MAX_CONCURRENT_POSITIONS = original_cap
+
+    async def test_correlation_cap_database_failure_failsafe(self):
+        # Mock database query failure
+        self.mock_position_repo.get_open_positions = AsyncMock(side_effect=Exception("SQLite connection timeout"))
+        
+        # Should return None (block trade) as fail-safe
         open_pos = await self.executor.execute_trade(self.pred, self.fv)
         self.assertIsNone(open_pos)
         self.mock_position_repo.add_position.assert_not_called()

@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.domain.models import ModelRegistry, ClosedTrade
 from app.domain.interfaces import ITradeHistoryRepository, IModelRegistryRepository, IXGBoostInferenceEngine
 from app.websocket.manager import manager as ws_manager
+from app.ml_pipeline.training_utils import compute_class_sample_weights
 
 logger = logging.getLogger(__name__)
 
@@ -176,11 +177,17 @@ class RetrainScheduler:
             X_train, y_train = df_X.iloc[train_idx], df_y[train_idx]
             X_val, y_val = df_X.iloc[val_idx], df_y[val_idx]
             
-            dtrain = xgb.DMatrix(X_train, label=y_train)
+            # Class imbalance handling (sesuai 03 - Pipeline AI): win rate
+            # rendah by design membuat label SALAH jauh lebih banyak dari
+            # BUY_BENAR pada data closed trades riil. Sample weight inverse
+            # frequency dihitung hanya dari training split, lalu dipasang ke
+            # DMatrix training (bukan validation) agar metrik val_accuracy
+            # tetap mengukur performa pada distribusi data asli/apa adanya.
+            train_sample_weights = compute_class_sample_weights(y_train, num_class=3)
+            
+            dtrain = xgb.DMatrix(X_train, label=y_train, weight=train_sample_weights)
             dval = xgb.DMatrix(X_val, label=y_val)
             
-            # Handle class imbalance if needed (optional but good practice)
-            # scale_pos_weight can be estimated or calculated. We will keep params basic.
             params = {
                 "max_depth": 6,
                 "learning_rate": 0.05,

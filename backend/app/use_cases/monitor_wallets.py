@@ -87,6 +87,17 @@ class MonitorWalletsUseCase:
             except Exception as e:
                 logger.error(f"Error consuming event in monitor loop: {e}", exc_info=True)
 
+    async def reload_watchlist(self) -> None:
+        """Reloads active target wallets from DB and updates monitor subscription list."""
+        active_wallets = await self.wallet_repo.get_active_wallets()
+        wallet_addresses = [w.wallet_address for w in active_wallets]
+        
+        if hasattr(self.monitor, "update_wallets"):
+            self.monitor.update_wallets(wallet_addresses)
+        else:
+            self.monitor.wallets = wallet_addresses
+        logger.info(f"[MONITOR ORCHESTRATOR] Watchlist reloaded. Monitoring {len(wallet_addresses)} active wallets.")
+
     async def stop(self) -> None:
         self.is_running = False
         if self.consumer_task:

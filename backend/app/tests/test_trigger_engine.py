@@ -10,10 +10,14 @@ from app.core.config import settings
 
 class TestTriggerEngine(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        from app.blockchain.monitor import SolanaWebSocketMonitor
+        SolanaWebSocketMonitor.degraded_mode = False
+        
         # Mock repositories & services
         self.mock_cooldown_repo = MagicMock()
         self.mock_cooldown_repo.get_cooldown = AsyncMock(return_value=None)
         self.mock_cooldown_repo.set_cooldown = AsyncMock()
+        self.mock_cooldown_repo.delete_cooldown = AsyncMock()
         
         self.mock_token_info_service = MagicMock()
         # Default valid token info
@@ -83,7 +87,7 @@ class TestTriggerEngine(unittest.IsolatedAsyncioTestCase):
         self.mock_cooldown_repo.get_cooldown.return_value = CooldownState(
             wallet_address="Wha1eA11111111111111111111111111111111111",
             token_address="SomeCoinAddressxxxxxxxxxxxxxxxxxxxxxxxxx",
-            last_trigger_ts=datetime.now(timezone.utc) - timedelta(minutes=10), # 10m ago (within 1h limit)
+            last_trigger_ts=datetime.now(timezone.utc) - timedelta(minutes=2), # 2m ago (within 5m pending window)
             active_position_id=None
         )
 

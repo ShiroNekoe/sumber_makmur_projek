@@ -6,7 +6,13 @@ from typing import Optional
 
 from app.core.config import settings
 from app.domain.models import PredictionResult, FeatureVector, OpenPosition
-from app.domain.interfaces import IPositionRepository, ICooldownRepository, IModelRegistryRepository
+from app.domain.interfaces import (
+    IPositionRepository,
+    ICooldownRepository,
+    IModelRegistryRepository,
+    ITokenInfoService,
+    ITokenSafetyService,
+)
 from app.websocket.manager import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -22,12 +28,22 @@ class AutoTradeExecutor:
         position_repo: IPositionRepository,
         cooldown_repo: ICooldownRepository,
         model_registry_repo: IModelRegistryRepository,
-        trade_history_repo = None # optional inject to query active positions or history
+        trade_history_repo = None, # optional inject to query active positions or history
+        token_info_service: Optional[ITokenInfoService] = None,
+        token_safety_service: Optional[ITokenSafetyService] = None,
     ):
         self.position_repo = position_repo
         self.cooldown_repo = cooldown_repo
         self.model_registry_repo = model_registry_repo
         self.trade_history_repo = trade_history_repo
+
+        # Diteruskan ke ParallelExecutionEngine (F-09) agar Lapis 3
+        # (kill-switch) bisa polling data on-chain riil. Opsional dan
+        # default None -- jika tidak disuntikkan, kill-switch tetap aktif
+        # namun fail-open (lihat ParallelExecutionEngine._check_onchain_kill_signals).
+        self.token_info_service = token_info_service
+        self.token_safety_service = token_safety_service
+
         self.lock = asyncio.Lock()
 
     async def execute_trade(
@@ -42,16 +58,29 @@ class AutoTradeExecutor:
             logger.info(f"[AUTO TRADE] Starting trade execution check for token: {token_address}")
 
             # 1. Check Correlation Cap (F-16)
-            open_positions = await self.position_repo.get_open_positions()
+            try:
+                open_positions = await self.position_repo.get_open_positions()
+            except Exception as db_err:
+                logger.error(f"[AUTO TRADE] [BLOCKED] Database query for open positions failed: {db_err}. Blocking trade as fail-safe.", exc_info=True)
+                return None
+
             max_positions = getattr(settings, "RISK_MAX_CONCURRENT_POSITIONS", 3)
             if len(open_positions) >= max_positions:
-                logger.warning(f"[AUTO TRADE] [BLOCKED] Open positions cap reached ({len(open_positions)}/{max_positions}).")
-                # Emit position cap reached event
+                logger.warning(
+                    f"[AUTO TRADE] [BLOCKED] Correlation cap reached. "
+                    f"Token: {token_address} blocked. "
+                    f"Active positions: {len(open_positions)}/{max_positions}. "
+                    f"Timestamp: {datetime.now(timezone.utc).isoformat()}"
+                )
+                # Emit position cap reached event to F-07 dashboard (info level)
                 await ws_manager.broadcast({
-                    "event": "POSITION_CAP_REACHED",
-                    "open_count": len(open_positions),
-                    "max_count": max_positions,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
+                    "type": "position_cap_reached",
+                    "data": {
+                        "event": "POSITION_CAP_REACHED",
+                        "open_count": len(open_positions),
+                        "max_count": max_positions,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
                 })
                 return None
                 
@@ -77,25 +106,55 @@ class AutoTradeExecutor:
                 
             logger.info(f"[AUTO TRADE] Sizing check: equity=${equity}, risk={risk_pct:.1%}, sl_dist={sl_distance_pct:.1%}. Target size: ${position_size_usd:.2f}")
             
-            # 3. Place Order (Mock pump.fun API call)
+            # 3. Place Order (Mock pump.fun API call with F-19 retries)
             try:
-                entry_price = 1.0 # mock entry price
-                slippage_estimate = 0.005 # 0.5% slippage
+                entry_price = None
+                order_success = False
+                max_attempts = 3
                 
-                # Verify slippage tolerance
-                max_slippage = getattr(settings, "SLIPPAGE_TOLERANCE", 0.02)
-                if slippage_estimate > max_slippage:
-                    logger.error(f"[AUTO TRADE] [FAILED] Slippage too high: {slippage_estimate} > {max_slippage}")
+                for attempt in range(max_attempts):
+                    try:
+                        # Simulation hook to test entry order failure
+                        if token_address == "FailEntryTokenxxxxxxxxxxxxxxxxxxxxxxx":
+                            raise IOError("pump.fun swap failed: Insufficient liquidity pool")
+                            
+                        entry_price = 1.0 # mock entry price
+                        slippage_estimate = 0.005 # 0.5% slippage
+                        
+                        # Verify slippage tolerance
+                        max_slippage = getattr(settings, "SLIPPAGE_TOLERANCE", 0.02)
+                        if slippage_estimate > max_slippage:
+                            raise ValueError(f"Slippage too high: {slippage_estimate} > {max_slippage}")
+                        
+                        # Mock Sign and Place Order
+                        logger.info(f"[AUTO TRADE] Signing order using local encrypted wallet keypair (attempt {attempt+1})...")
+                        await asyncio.sleep(0.05) # Simulate network/signing latency
+                        
+                        # Confirm transaction (poll status)
+                        logger.info(f"[AUTO TRADE] Order placed on pump.fun. TX: mock_tx_{uuid.uuid4().hex[:12]}. Confirming...")
+                        await asyncio.sleep(0.05)
+                        
+                        order_success = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"[AUTO TRADE] Order placement attempt {attempt+1} failed: {e}")
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(0.1) # small delay before retry
+                            
+                if not order_success:
+                    # If still fails: log as 'missed_entry' (TIDAK masuk closed_trades) and emit alert 'entry_failed'
+                    logger.error(f"[AUTO TRADE] [FAILED] Entry order placement failed after {max_attempts} attempts.")
+                    
+                    from app.core.error_handler import log_system_error, ErrorType, ErrorSeverity
+                    await log_system_error(
+                        error_type=ErrorType.ENTRY_FAILED,
+                        severity=ErrorSeverity.ERROR,
+                        context=f"Failed to place entry order for token {token_address} after {max_attempts} attempts.",
+                        recovery_action="missed_entry: log to dataset only, do not proceed",
+                        resolution_status="failed"
+                    )
                     return None
-                
-                # Mock Sign and Place Order
-                logger.info(f"[AUTO TRADE] Signing order using local encrypted wallet keypair...")
-                await asyncio.sleep(0.1) # Simulate network/signing latency
-                
-                # Confirm transaction (poll status)
-                logger.info(f"[AUTO TRADE] Order placed on pump.fun. TX: mock_tx_{uuid.uuid4().hex[:12]}. Confirming...")
-                await asyncio.sleep(0.1)
-                
+                    
                 # 4. Save state to SQLite (state = OPEN)
                 position_id = f"pos_{uuid.uuid4().hex[:8]}"
                 active_model = await self.model_registry_repo.get_active_model()
@@ -146,7 +205,15 @@ class AutoTradeExecutor:
                 
                 # 6. Trigger F-09 Parallel Protection
                 from app.execution.executor import ParallelExecutionEngine
-                engine = ParallelExecutionEngine(open_pos, self.position_repo, self.cooldown_repo, self.model_registry_repo, self.trade_history_repo)
+                engine = ParallelExecutionEngine(
+                    open_pos,
+                    self.position_repo,
+                    self.cooldown_repo,
+                    self.model_registry_repo,
+                    self.trade_history_repo,
+                    token_info_service=self.token_info_service,
+                    token_safety_service=self.token_safety_service,
+                )
                 asyncio.create_task(engine.start_monitoring())
                 
                 return open_pos

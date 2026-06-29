@@ -12,7 +12,9 @@ from app.domain.models import (
     FilterAuditLog,
     FeatureVector,
     PredictionResult,
-    SafetyCheckResult
+    SafetyCheckResult,
+    HardFilterAuditLog,
+    SystemErrorLog
 )
 
 
@@ -89,6 +91,17 @@ class IModelRegistryRepository(ABC):
 
     @abstractmethod
     async def get_model_version(self, model_version: str) -> Optional[ModelRegistry]:
+        pass
+
+
+class IModelBootstrapService(ABC):
+    @abstractmethod
+    async def bootstrap_model_v0(
+        self,
+        models_dir: str,
+        model_registry_repo: IModelRegistryRepository,
+        trade_history_repo: Optional[ITradeHistoryRepository] = None,
+    ) -> bool:
         pass
 
 
@@ -183,6 +196,25 @@ class ITokenSafetyCheckGate(ABC):
     async def evaluate_safety(self, prediction: PredictionResult, feature_vector: FeatureVector) -> SafetyCheckResult:
         pass
 
+
+class IHardFilterLogRepository(ABC):
+    @abstractmethod
+    async def add_hard_filter_log(self, log: HardFilterAuditLog) -> None:
+        pass
+
+    @abstractmethod
+    async def get_hard_filter_logs(self, limit: int = 100) -> List[HardFilterAuditLog]:
+        pass
+
+
+class IErrorLogRepository(ABC):
+    @abstractmethod
+    async def log_error(self, error_log: SystemErrorLog) -> None:
+        pass
+
+    @abstractmethod
+    async def get_error_logs(self, limit: int = 100) -> List[SystemErrorLog]:
+        pass
 
 
 

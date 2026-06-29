@@ -9,6 +9,7 @@ class WatchlistWallet(BaseModel):
     source: str  # 'manual' | 'auto_discovered'
     added_at: datetime
     active: bool = True
+    status: Optional[str] = "pending"  # 'pending' | 'approved' | 'rejected'
 
 
 class OpenPosition(BaseModel):
@@ -26,6 +27,10 @@ class OpenPosition(BaseModel):
     peak_r_multiple: float = 0.0
     confidence_score: float
     model_version: str
+
+    model_config = {
+        "protected_namespaces": ()
+    }
 
 
 class ClosedTrade(BaseModel):
@@ -52,6 +57,10 @@ class ClosedTrade(BaseModel):
     is_bootstrap: bool = False
     model_version: str
 
+    model_config = {
+        "protected_namespaces": ()
+    }
+
 
 class ModelRegistry(BaseModel):
     model_version: str
@@ -61,6 +70,10 @@ class ModelRegistry(BaseModel):
     expectancy_r: float
     is_active: bool = False
     rolled_back: bool = False
+
+    model_config = {
+        "protected_namespaces": ()
+    }
 
 
 class CooldownState(BaseModel):
@@ -136,5 +149,40 @@ class SafetyCheckResult(BaseModel):
     top_10_holders_share: float
     mint_authority_revoked: bool
     timestamp: datetime
+
+
+class HardFilterAuditLog(BaseModel):
+    log_id: str
+    token_address: str
+    age_minutes: float
+    liquidity_usd: float
+    passed: bool
+    reason: Optional[str] = None  # 'age' | 'liquidity' | 'dexscreener_failed' | 'token_not_found'
+    timestamp: datetime
+
+
+class RpcFailoverEvent(BaseModel):
+    event_type: str  # 'failover' | 'degraded' | 'recovery'
+    source: str      # 'primary' | 'secondary'
+    target_url: str
+    timestamp: datetime
+
+    model_config = {
+        "protected_namespaces": ()
+    }
+
+
+class SystemErrorLog(BaseModel):
+    log_id: str
+    timestamp: datetime
+    error_type: str
+    severity: str
+    context: str
+    recovery_action: str
+    resolution_status: str
+
+    model_config = {
+        "protected_namespaces": ()
+    }
 
 

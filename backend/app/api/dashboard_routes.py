@@ -265,6 +265,27 @@ async def approve_wallet_candidate(
         f"-> {body.action.upper()} at {approval_ts.isoformat()}"
     )
 
+    query_service = _get_query_service(request)
+    wallet_repo = query_service.wallet_repo
+
+    # Fetch candidate from repository
+    candidate = await wallet_repo.get_wallet(wallet_address)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Wallet candidate not found")
+
+    # Update candidate fields
+    candidate.status = "approved" if body.action == "approve" else "rejected"
+    candidate.active = True if body.action == "approve" else False
+    await wallet_repo.update_wallet(candidate)
+
+    # Hot reload active watchlist on Monitor Orchestrator if available
+    monitor_use_case = getattr(request.app.state, "monitor_use_case", None)
+    if monitor_use_case is not None:
+        try:
+            await monitor_use_case.reload_watchlist()
+        except Exception as err:
+            logger.error(f"[DASHBOARD API] Failed to hot-reload monitor watchlist: {err}")
+
     # Broadcast the approval event to all WebSocket clients
     try:
         from app.websocket.manager import manager as ws_manager

@@ -12,6 +12,7 @@ decision_gate:
 
 risk:
   risk_pct_per_trade: 0.01 # Fixed 1% dari equity
+  max_concurrent_positions: 3
 
 trailing_tp:
   tiers:
@@ -31,6 +32,12 @@ retrain:
   min_buy_benar_in_alt: 15
   rolling_window_days: 30
   rollback_accuracy_drop_pct: 0.05
+
+model_bootstrap:
+  history_days: 30
+  min_trades_warning: 50
+  max_signatures_per_wallet: 500
+  api_timeout_seconds: 8.0
 
 kill_switch:
   dev_wallet_sell_threshold_pct: 0.05 # % dari supply, contoh default 5%
@@ -53,3 +60,12 @@ safety_check:
   require_lp_locked: true
   require_contract_verified: true
   require_mint_authority_revoked: true
+
+discovery:
+  occurrence_threshold: 3
+  profit_verification_min_pct: 0.60
+
+rpc:
+  primary_url: "https://api.mainnet-beta.solana.com"
+  secondary_url: "https://api.devnet.solana.com"
+  max_retry: 5

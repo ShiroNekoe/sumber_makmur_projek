@@ -5,16 +5,19 @@ from typing import Dict, Any, List, Optional
 import os
 import xgboost as xgb
 import pandas as pd
-import numpy as np
 from app.core.config import settings
 from app.domain.models import FeatureVector
 from app.domain.interfaces import (
     IFeatureExtractor,
     ITradeHistoryRepository,
     ITokenInfoService,
+    IModelBootstrapService,
     IXGBoostInferenceEngine,
     IModelRegistryRepository
 )
+from app.ml_pipeline.bootstrap import HistoricalModelBootstrapService
+from app.ml_pipeline.training_utils import compute_class_sample_weights
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -154,13 +157,22 @@ class XGBoostInferenceEngine(IXGBoostInferenceEngine):
         self,
         model_registry_repo: IModelRegistryRepository,
         trade_history_repo: Optional[ITradeHistoryRepository] = None,
+        bootstrap_service: Optional[IModelBootstrapService] = None,
         models_dir: str = "models"
     ):
         self.model_registry_repo = model_registry_repo
         self.trade_history_repo = trade_history_repo
+        self.bootstrap_service = bootstrap_service or HistoricalModelBootstrapService()
         self.models_dir = models_dir
         self.model = None
         self.current_model_version = None
+
+    async def ensure_model_ready(self) -> None:
+        """
+        Startup hook for F-11. Loads an active model or runs the one-time
+        historical bootstrap if the registry has no active model.
+        """
+        await self._ensure_model_loaded()
 
     async def run_inference(self, feature_vector: FeatureVector) -> dict:
         """
@@ -247,138 +259,32 @@ class XGBoostInferenceEngine(IXGBoostInferenceEngine):
         except Exception as e:
             logger.error(f"[XGBOOST ENGINE] Error checking or loading active model: {e}")
             
-        # Trigger bootstrapping if no model loaded
-        await self._bootstrap_model_v0()
+        # Trigger historical bootstrapping if no model is active.
+        bootstrap_success = await self._bootstrap_model_v0()
+        if not bootstrap_success:
+            logger.error(
+                "[XGBOOST ENGINE] Model v0 bootstrap failed or had no usable historical data. "
+                "Inference will use HOLD fallback until a model is available."
+            )
 
-    async def _bootstrap_model_v0(self) -> None:
-        logger.info("[XGBOOST ENGINE] Starting Auto-Bootstrap for Model v0...")
-        os.makedirs(self.models_dir, exist_ok=True)
-        
-        # Generate synthetic dataset (120 samples)
-        np.random.seed(42)
-        n_samples = 120
-        labels = np.array([0] * 40 + [1] * 40 + [2] * 40)
-        
-        pos_size = np.random.uniform(100, 2000, n_samples)
-        token_age = np.random.uniform(5, 1440, n_samples)
-        liq = np.random.uniform(5000, 100000, n_samples)
-        slip = np.random.uniform(0.005, 0.05, n_samples)
-        cluster = np.random.choice([0.0, 1.0], size=n_samples)
-        
-        win_rate = np.random.uniform(0.3, 0.7, n_samples)
-        win_rate[40:80] = np.random.uniform(0.55, 0.85, 40)  # BUY bias
-        
-        hold_time = np.random.uniform(5, 120, n_samples)
-        typ_size = np.random.uniform(100, 2000, n_samples)
-        exit_pattern = np.random.uniform(0.0, 0.5, n_samples)
-        
-        sol_mom = np.random.uniform(-0.05, 0.05, n_samples)
-        sol_mom[40:80] = np.random.uniform(0.01, 0.1, 40)    # BUY bias
-        sol_mom[80:120] = np.random.uniform(-0.1, -0.01, 40)  # SELL bias
-        
-        vol_ratio = np.random.uniform(0.01, 0.5, n_samples)
-        hours = np.random.randint(0, 24, n_samples)
-        
-        df_synthetic = pd.DataFrame({
-            "position_size_usd": pos_size,
-            "token_age_minutes": token_age,
-            "liquidity_pool_depth": liq,
-            "slippage_actual": slip,
-            "cluster_score": cluster,
-            "win_rate_30d": win_rate,
-            "avg_holding_time_minutes": hold_time,
-            "typical_trade_size_usd": typ_size,
-            "past_exit_pattern_score": exit_pattern,
-            "sol_usd_momentum": sol_mom,
-            "token_volume_liquidity_ratio": vol_ratio,
-            "hour_of_day_utc": hours
-        })
-        
-        dtrain = xgb.DMatrix(df_synthetic, label=labels)
-        params = {
-            "max_depth": 6,
-            "learning_rate": 0.05,
-            "objective": "multi:softprob",
-            "num_class": 3,
-            "seed": 42
-        }
-        model = xgb.train(params, dtrain, num_boost_round=300)
-        
-        filepath = os.path.join(self.models_dir, "v0.json")
-        model.save_model(filepath)
-        
-        # Register Model v0 in registry
-        from app.domain.models import ModelRegistry
-        
-        registry_entry = ModelRegistry(
-            model_version="v0",
-            trained_at=datetime.now(timezone.utc),
-            training_sample_count=n_samples,
-            validation_accuracy=0.65,
-            expectancy_r=0.15,
-            is_active=True,
-            rolled_back=False
+    async def _bootstrap_model_v0(self) -> bool:
+        logger.info("[XGBOOST ENGINE] Starting historical Model v0 bootstrap...")
+        success = await self.bootstrap_service.bootstrap_model_v0(
+            models_dir=self.models_dir,
+            model_registry_repo=self.model_registry_repo,
+            trade_history_repo=self.trade_history_repo,
         )
-        
-        await self.model_registry_repo.add_model_version(registry_entry)
-        
-        # Populate the database with the bootstrap trades if trade_history_repo is available
-        if self.trade_history_repo:
-            from app.domain.models import ClosedTrade
-            import uuid
-            for i in range(n_samples):
-                label_val = int(labels[i])
-                if label_val == 1:
-                    direction = "BUY"
-                    label_str = "BUY_BENAR"
-                    r_mult = 3.5
-                    pnl = 3.5 * settings.RISK_PCT_PER_TRADE
-                elif label_val == 2:
-                    direction = "BUY"
-                    label_str = "SALAH"
-                    r_mult = -1.2
-                    pnl = -1.2 * settings.RISK_PCT_PER_TRADE
-                else:
-                    direction = "BUY"
-                    label_str = "HOLD"
-                    r_mult = 0.5
-                    pnl = 0.5 * settings.RISK_PCT_PER_TRADE
-                
-                # Deterministic random time within past 30 days
-                signal_time = datetime.now(timezone.utc) - timedelta(
-                    days=int(30 - (i * 0.2)),
-                    hours=int(i % 24),
-                    minutes=int((i * 7) % 60)
-                )
-                entry_time = signal_time + timedelta(minutes=1)
-                exit_time = entry_time + timedelta(minutes=int(hold_time[i]))
-                
-                trade = ClosedTrade(
-                    trade_id=f"bt_{uuid.uuid4().hex[:8]}",
-                    wallet_source=settings.TARGET_WALLETS[i % len(settings.TARGET_WALLETS)],
-                    token_address=f"token_bt_{i}xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-                    token_symbol=f"BTK_{i}",
-                    signal_ts=signal_time,
-                    entry_ts=entry_time,
-                    exit_ts=exit_time,
-                    direction=direction,
-                    confidence_score=0.85,
-                    safety_check_passed=True,
-                    entry_price=1.0,
-                    exit_price=1.0 + pnl,
-                    position_size_usd=float(pos_size[i]),
-                    risk_pct=settings.RISK_PCT_PER_TRADE,
-                    pnl_pct_actual=pnl,
-                    r_multiple=r_mult,
-                    label=label_str,
-                    holding_time_minutes=int(hold_time[i]),
-                    exit_reason="manual",
-                    is_paper_trade=True,
-                    is_bootstrap=True,
-                    model_version="v0"
-                )
-                await self.trade_history_repo.add_closed_trade(trade)
+        if not success:
+            return False
 
+        filepath = os.path.join(self.models_dir, "v0.json")
+        if not os.path.exists(filepath):
+            logger.error("[XGBOOST ENGINE] Bootstrap reported success but %s is missing.", filepath)
+            return False
+
+        model = xgb.Booster()
+        model.load_model(filepath)
         self.model = model
         self.current_model_version = "v0"
-        logger.info("[XGBOOST ENGINE] Auto-Bootstrap complete. Model v0 trained, registered, and activated.")
+        logger.info("[XGBOOST ENGINE] Historical Model v0 loaded and activated.")
+        return True

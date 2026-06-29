@@ -9,7 +9,9 @@ from app.domain.models import (
     ModelRegistry,
     CooldownState,
     OnchainEvent,
-    FilterAuditLog
+    FilterAuditLog,
+    HardFilterAuditLog,
+    SystemErrorLog
 )
 from app.domain.interfaces import (
     IWalletRepository,
@@ -18,7 +20,9 @@ from app.domain.interfaces import (
     IModelRegistryRepository,
     ICooldownRepository,
     IOnchainEventRepository,
-    IFilterLogRepository
+    IFilterLogRepository,
+    IHardFilterLogRepository,
+    IErrorLogRepository
 )
 from app.infrastructure.database.models import (
     WatchlistWalletORM,
@@ -27,7 +31,9 @@ from app.infrastructure.database.models import (
     ModelRegistryORM,
     CooldownStateORM,
     OnchainEventORM,
-    FilterAuditLogORM
+    FilterAuditLogORM,
+    HardFilterAuditLogORM,
+    SystemErrorLogORM
 )
 
 
@@ -41,7 +47,8 @@ class SQLAlchemyWalletRepository(IWalletRepository):
             label=orm.label,
             source=orm.source,
             added_at=orm.added_at,
-            active=orm.active
+            active=orm.active,
+            status=getattr(orm, "status", "pending")
         )
 
     async def get_all_wallets(self) -> List[WatchlistWallet]:
@@ -62,7 +69,8 @@ class SQLAlchemyWalletRepository(IWalletRepository):
             label=wallet.label,
             source=wallet.source,
             added_at=wallet.added_at,
-            active=wallet.active
+            active=wallet.active,
+            status=wallet.status or "pending"
         )
         self.db.add(orm)
         self.db.commit()
@@ -73,6 +81,8 @@ class SQLAlchemyWalletRepository(IWalletRepository):
             orm.label = wallet.label
             orm.source = wallet.source
             orm.active = wallet.active
+            if hasattr(orm, "status"):
+                orm.status = wallet.status or "pending"
             self.db.commit()
 
 
@@ -359,5 +369,71 @@ class SQLAlchemyFilterLogRepository(IFilterLogRepository):
 
     async def get_logs(self, limit: int = 100) -> List[FilterAuditLog]:
         orms = self.db.query(FilterAuditLogORM).order_by(FilterAuditLogORM.timestamp.desc()).limit(limit).all()
+        return [self._to_domain(o) for o in orms]
+
+
+class SQLAlchemyHardFilterLogRepository(IHardFilterLogRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def _to_domain(self, orm: HardFilterAuditLogORM) -> HardFilterAuditLog:
+        return HardFilterAuditLog(
+            log_id=orm.log_id,
+            token_address=orm.token_address,
+            age_minutes=orm.age_minutes,
+            liquidity_usd=orm.liquidity_usd,
+            passed=orm.passed,
+            reason=orm.reason,
+            timestamp=orm.timestamp
+        )
+
+    async def add_hard_filter_log(self, log: HardFilterAuditLog) -> None:
+        orm = HardFilterAuditLogORM(
+            log_id=log.log_id,
+            token_address=log.token_address,
+            age_minutes=log.age_minutes,
+            liquidity_usd=log.liquidity_usd,
+            passed=log.passed,
+            reason=log.reason,
+            timestamp=log.timestamp
+        )
+        self.db.add(orm)
+        self.db.commit()
+
+    async def get_hard_filter_logs(self, limit: int = 100) -> List[HardFilterAuditLog]:
+        orms = self.db.query(HardFilterAuditLogORM).order_by(HardFilterAuditLogORM.timestamp.desc()).limit(limit).all()
+        return [self._to_domain(o) for o in orms]
+
+
+class SQLAlchemyErrorLogRepository(IErrorLogRepository):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def _to_domain(self, orm: SystemErrorLogORM) -> SystemErrorLog:
+        return SystemErrorLog(
+            log_id=orm.log_id,
+            timestamp=orm.timestamp,
+            error_type=orm.error_type,
+            severity=orm.severity,
+            context=orm.context,
+            recovery_action=orm.recovery_action,
+            resolution_status=orm.resolution_status
+        )
+
+    async def log_error(self, error_log: SystemErrorLog) -> None:
+        orm = SystemErrorLogORM(
+            log_id=error_log.log_id,
+            timestamp=error_log.timestamp,
+            error_type=error_log.error_type,
+            severity=error_log.severity,
+            context=error_log.context,
+            recovery_action=error_log.recovery_action,
+            resolution_status=error_log.resolution_status
+        )
+        self.db.add(orm)
+        self.db.commit()
+
+    async def get_error_logs(self, limit: int = 100) -> List[SystemErrorLog]:
+        orms = self.db.query(SystemErrorLogORM).order_by(SystemErrorLogORM.timestamp.desc()).limit(limit).all()
         return [self._to_domain(o) for o in orms]
 

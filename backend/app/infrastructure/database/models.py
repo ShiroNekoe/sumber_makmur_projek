@@ -11,6 +11,7 @@ class WatchlistWalletORM(Base):
     source = Column(String, nullable=False)  # 'manual' | 'auto_discovered'
     added_at = Column(DateTime, nullable=False)
     active = Column(Boolean, default=True, nullable=False)
+    status = Column(String, default="pending", nullable=True)  # 'pending' | 'approved' | 'rejected'
 
 
 class ModelRegistryORM(Base):
@@ -120,4 +121,28 @@ class FilterAuditLogORM(Base):
     timestamp = Column(DateTime, nullable=False)
 
     wallet = relationship("WatchlistWalletORM")
+
+
+class HardFilterAuditLogORM(Base):
+    __tablename__ = "hard_filter_audit_logs"
+
+    log_id = Column(String, primary_key=True)
+    token_address = Column(String, nullable=False, index=True)
+    age_minutes = Column(Float, nullable=False)
+    liquidity_usd = Column(Float, nullable=False)
+    passed = Column(Boolean, nullable=False)
+    reason = Column(String, nullable=True)
+    timestamp = Column(DateTime, nullable=False)
+
+
+class SystemErrorLogORM(Base):
+    __tablename__ = "system_error_logs"
+
+    log_id = Column(String, primary_key=True)
+    timestamp = Column(DateTime, nullable=False)
+    error_type = Column(String, nullable=False)
+    severity = Column(String, nullable=False)
+    context = Column(String, nullable=False)
+    recovery_action = Column(String, nullable=False)
+    resolution_status = Column(String, nullable=False)
 

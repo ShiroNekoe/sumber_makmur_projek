@@ -7,6 +7,67 @@ from datetime import datetime, timezone
 
 from app.domain.models import FeatureVector, ModelRegistry
 from app.ml_pipeline.inference import XGBoostInferenceEngine
+from app.ml_pipeline.bootstrap import FEATURE_COLUMNS
+
+
+class FakeBootstrapService:
+    def __init__(self, should_succeed=True, sample_count=6):
+        self.should_succeed = should_succeed
+        self.sample_count = sample_count
+        self.calls = 0
+
+    async def bootstrap_model_v0(self, models_dir, model_registry_repo, trade_history_repo=None):
+        self.calls += 1
+        if not self.should_succeed:
+            return False
+
+        import numpy as np
+        import pandas as pd
+        import xgboost as xgb
+
+        os.makedirs(models_dir, exist_ok=True)
+        labels = np.array([0, 1, 2, 0, 1, 2], dtype=int)
+        features = pd.DataFrame(
+            {
+                "position_size_usd": [100, 250, 150, 180, 300, 130],
+                "token_age_minutes": [60, 90, 120, 150, 180, 210],
+                "liquidity_pool_depth": [5000, 8000, 10000, 9000, 12000, 7000],
+                "slippage_actual": [0.01] * 6,
+                "cluster_score": [0, 1, 0, 1, 1, 0],
+                "win_rate_30d": [0.45, 0.50, 0.40, 0.55, 0.60, 0.35],
+                "avg_holding_time_minutes": [20, 30, 25, 35, 40, 22],
+                "typical_trade_size_usd": [500, 550, 450, 600, 650, 480],
+                "past_exit_pattern_score": [0.0] * 6,
+                "sol_usd_momentum": [0.0] * 6,
+                "token_volume_liquidity_ratio": [0.10, 0.20, 0.15, 0.12, 0.22, 0.11],
+                "hour_of_day_utc": [1, 4, 8, 12, 16, 20],
+            },
+            columns=FEATURE_COLUMNS,
+        )
+        model = xgb.train(
+            {
+                "max_depth": 2,
+                "learning_rate": 0.1,
+                "objective": "multi:softprob",
+                "num_class": 3,
+                "seed": 42,
+            },
+            xgb.DMatrix(features, label=labels),
+            num_boost_round=5,
+        )
+        model.save_model(os.path.join(models_dir, "v0.json"))
+        await model_registry_repo.add_model_version(
+            ModelRegistry(
+                model_version="v0",
+                trained_at=datetime.now(timezone.utc),
+                training_sample_count=self.sample_count,
+                validation_accuracy=0.80,
+                expectancy_r=0.20,
+                is_active=True,
+                rolled_back=False,
+            )
+        )
+        return True
 
 
 class TestXGBoostInferenceEngine(unittest.IsolatedAsyncioTestCase):
@@ -18,10 +79,12 @@ class TestXGBoostInferenceEngine(unittest.IsolatedAsyncioTestCase):
         self.mock_model_registry_repo = MagicMock()
         self.mock_model_registry_repo.get_active_model = AsyncMock(return_value=None)
         self.mock_model_registry_repo.add_model_version = AsyncMock()
+        self.bootstrap_service = FakeBootstrapService()
         
         # Initialize inference engine with mock repo and temp dir
         self.engine = XGBoostInferenceEngine(
             model_registry_repo=self.mock_model_registry_repo,
+            bootstrap_service=self.bootstrap_service,
             models_dir=self.test_dir
         )
         
@@ -70,8 +133,9 @@ class TestXGBoostInferenceEngine(unittest.IsolatedAsyncioTestCase):
         registry_entry = args[0]
         self.assertEqual(registry_entry.model_version, "v0")
         self.assertTrue(registry_entry.is_active)
-        self.assertEqual(registry_entry.training_sample_count, 120)
-        self.assertEqual(registry_entry.expectancy_r, 0.15)
+        self.assertEqual(registry_entry.training_sample_count, 6)
+        self.assertEqual(registry_entry.expectancy_r, 0.20)
+        self.assertEqual(self.bootstrap_service.calls, 1)
         
         # Check prediction results
         self.assertIn("direction", result)
@@ -124,3 +188,17 @@ class TestXGBoostInferenceEngine(unittest.IsolatedAsyncioTestCase):
         self.assertIn("direction", result)
         self.assertIn("confidence_score", result)
         self.assertIn("target_price_estimate", result)
+
+    async def test_bootstrap_failure_falls_back_to_hold_without_model(self):
+        failed_engine = XGBoostInferenceEngine(
+            model_registry_repo=self.mock_model_registry_repo,
+            bootstrap_service=FakeBootstrapService(should_succeed=False),
+            models_dir=self.test_dir
+        )
+
+        result = await failed_engine.run_inference(self.fv)
+
+        self.assertIsNone(failed_engine.model)
+        self.assertEqual(result["direction"], "HOLD")
+        self.assertEqual(result["confidence_score"], 0.0)
+        self.mock_model_registry_repo.add_model_version.assert_not_called()

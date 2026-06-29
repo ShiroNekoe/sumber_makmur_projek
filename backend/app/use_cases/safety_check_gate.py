@@ -61,6 +61,17 @@ class SafetyCheckGate(ITokenSafetyCheckGate):
             )
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning(f"[SAFETY GATE] [FAIL-CLOSED] Timeout fetching safety info for {token_address}. Blocking alert.")
+            
+            # Log F-19 Central Safety Timeout
+            from app.core.error_handler import log_system_error, ErrorType, ErrorSeverity
+            asyncio.create_task(log_system_error(
+                error_type=ErrorType.SAFETY_API_TIMEOUT,
+                severity=ErrorSeverity.ERROR,
+                context=f"Timeout limit (5s) exceeded fetching safety parameters for token {token_address}.",
+                recovery_action="fail_closed: block trade entry",
+                resolution_status="failed"
+            ))
+
             result = self._create_failed_result(token_address, "safety_api_failed")
             self._save_to_cache(token_address, result)
             await self._route_signal_and_log(prediction, result)

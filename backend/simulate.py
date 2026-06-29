@@ -154,20 +154,40 @@ async def main():
         position_repo=position_repo,
         cooldown_repo=cooldown_repo,
         model_registry_repo=model_registry_repo,
-        trade_history_repo=trade_history_repo
+        trade_history_repo=trade_history_repo,
+        token_info_service=token_info_service,
+        token_safety_service=safety_service
     )
     safety_check_gate.auto_trade_executor = auto_trade_executor
     
     trigger_engine = TriggerEngine(
         cooldown_repo=cooldown_repo,
         token_info_service=token_info_service,
-        ml_pipeline=ml_pipeline
+        ml_pipeline=ml_pipeline,
+        position_repo=position_repo
     )
     
+    # F-12 Dynamic Wallet Discovery background service
+    from app.use_cases.wallet_discovery import WalletDiscoveryService
+    wallet_discovery_service = WalletDiscoveryService(wallet_repo, token_info_service)
+    await wallet_discovery_service.start()
+    
+    # F-13 Token Age & Liquidity Hard Filter
+    from app.infrastructure.database.repository import SQLAlchemyHardFilterLogRepository
+    from app.use_cases.hard_filter import TokenAgeLiquidityHardFilter
+    hard_filter_log_repo = SQLAlchemyHardFilterLogRepository(db)
+    hard_filter = TokenAgeLiquidityHardFilter(
+        token_info_service=token_info_service,
+        trigger_engine=trigger_engine,
+        hard_filter_log_repo=hard_filter_log_repo
+    )
+
     relevance_filter = RelevanceFilter(
         filter_log_repo=filter_log_repo,
         trigger_engine=trigger_engine,
-        wallet_repo=wallet_repo
+        wallet_repo=wallet_repo,
+        wallet_discovery_service=wallet_discovery_service,
+        hard_filter=hard_filter
     )
     
     # Initialize the simulation monitor instead of real websocket client
@@ -186,6 +206,10 @@ async def main():
         print(f"\n{YELLOW}Stopping simulation...{RESET}")
     finally:
         await monitor_use_case.stop()
+        try:
+            await wallet_discovery_service.stop()
+        except Exception:
+            pass
         db.close()
 
 

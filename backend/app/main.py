@@ -105,7 +105,48 @@ async def lifespan(app: FastAPI):
     from app.use_cases.retrain_scheduler import RetrainScheduler
     import asyncio
 
+    import os
+    import shutil
+    from sqlalchemy import text
+
+    db_file = "sumber_makmur.db"
+    backup_file = "sumber_makmur_backup.db"
+    db_ok = False
+    
     db = SessionLocal()
+    
+    # F-19 Register SessionLocal factory to central error handler
+    from app.core import error_handler
+    error_handler.register_session_factory(SessionLocal)
+
+    try:
+        db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception as db_err:
+        logger.critical(f"[DATABASE CORRUPT] Database health check failed: {db_err}")
+        if os.path.exists(backup_file):
+            logger.warning("[DATABASE CORRUPT] Attempting recovery from daily backup...")
+            try:
+                db.close()
+                shutil.copyfile(backup_file, db_file)
+                db = SessionLocal()
+                db.execute(text("SELECT 1"))
+                db_ok = True
+                logger.info("[DATABASE RECOVERY] Database restored from backup successfully.")
+            except Exception as backup_err:
+                logger.critical(f"[DATABASE RECOVERY] Failed to restore database from backup: {backup_err}. System HALTING.")
+                raise SystemExit("Database corrupted and backup restore failed. Halt.")
+        else:
+            logger.critical("[DATABASE CORRUPT] No backup database found. System HALTING.")
+            raise SystemExit("Database corrupted and no backup found. Halt.")
+
+    if db_ok:
+        try:
+            shutil.copyfile(db_file, backup_file)
+            logger.info(f"[DATABASE] Daily backup created successfully: {backup_file}")
+        except Exception as backup_err:
+            logger.warning(f"[DATABASE] Failed to create daily backup: {backup_err}")
+
     app.state.db = db
     try:
         wallet_repo = SQLAlchemyWalletRepository(db)
@@ -169,30 +210,76 @@ async def lifespan(app: FastAPI):
         trigger_engine = TriggerEngine(
             cooldown_repo=cooldown_repo,
             token_info_service=token_info_service,
-            ml_pipeline=ml_pipeline
+            ml_pipeline=ml_pipeline,
+            position_repo=position_repo
         )
         
+        # F-12 Dynamic Wallet Discovery background service
+        from app.use_cases.wallet_discovery import WalletDiscoveryService
+        wallet_discovery_service = WalletDiscoveryService(wallet_repo, token_info_service)
+        await wallet_discovery_service.start()
+        app.state.wallet_discovery_service = wallet_discovery_service
+
+        # F-13 Token Age & Liquidity Hard Filter
+        from app.infrastructure.database.repository import SQLAlchemyHardFilterLogRepository
+        from app.use_cases.hard_filter import TokenAgeLiquidityHardFilter
+        hard_filter_log_repo = SQLAlchemyHardFilterLogRepository(db)
+        hard_filter = TokenAgeLiquidityHardFilter(
+            token_info_service=token_info_service,
+            trigger_engine=trigger_engine,
+            hard_filter_log_repo=hard_filter_log_repo
+        )
+        app.state.hard_filter = hard_filter
+
         relevance_filter = RelevanceFilter(
             filter_log_repo=filter_log_repo,
             trigger_engine=trigger_engine,
-            wallet_repo=wallet_repo
+            wallet_repo=wallet_repo,
+            wallet_discovery_service=wallet_discovery_service,
+            hard_filter=hard_filter
         )
+        # F-17 Crash Recovery Service
+        from app.use_cases.crash_recovery import CrashRecoveryService
+        recovery_service = CrashRecoveryService(
+            position_repo=position_repo,
+            cooldown_repo=cooldown_repo,
+            model_registry_repo=model_registry_repo,
+            trade_history_repo=trade_history_repo,
+            token_info_service=token_info_service,
+            retrain_scheduler=retrain_scheduler
+        )
+        await recovery_service.run_recovery()
         
         monitor = SolanaWebSocketMonitor()
         monitor_use_case = MonitorWalletsUseCase(wallet_repo, monitor, relevance_filter)
         await monitor_use_case.initialize_and_start()
         app.state.monitor_use_case = monitor_use_case
+
+        # Start config watchdog hot-reload loop
+        if settings.CONFIG_FILE_PATH:
+            app.state.config_watch_task = asyncio.create_task(settings.watch_config_loop())
+            logger.info("[STARTUP] Spawned background task for config hot-reload.")
     except Exception as e:
         logger.error(f"Error starting Wallet Monitor on startup: {e}", exc_info=True)
         
     yield
     
     # Shutdown logic
+    if hasattr(app.state, "config_watch_task"):
+        app.state.config_watch_task.cancel()
+        logger.info("[SHUTDOWN] Cancelled config hot-reload task.")
+
     if hasattr(app.state, "monitor_use_case"):
         try:
             await app.state.monitor_use_case.stop()
         except Exception as e:
             logger.error(f"Error stopping monitor: {e}")
+
+    if hasattr(app.state, "wallet_discovery_service"):
+        try:
+            await app.state.wallet_discovery_service.stop()
+        except Exception as e:
+            logger.error(f"Error stopping wallet discovery: {e}")
             
     if hasattr(app.state, "retrain_task"):
         app.state.retrain_task.cancel()
