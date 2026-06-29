@@ -24,6 +24,8 @@ from app.api.schemas import (
     WalletApprovalResponse,
     SystemStatusResponse,
     ComponentStatus,
+    SystemErrorListResponse,
+    SystemErrorResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -305,3 +307,33 @@ async def approve_wallet_candidate(
         success=True,
         message=f"Wallet {_partial_address(wallet_address)} has been {body.action}d.",
     )
+
+
+# ─── GET /dashboard/errors ───────────────────────────────────────────────────
+
+@router.get("/errors", response_model=SystemErrorListResponse, summary="Get system error logs")
+async def get_system_errors(
+    limit: int = Query(default=50, ge=1, le=200, description="Number of logs to return"),
+    request: Request = None,
+):
+    """Returns most recent system error/diagnostics logs from the SQLite database."""
+    try:
+        query_service = _get_query_service(request)
+        raw_errors = await query_service.get_system_errors(limit=limit)
+        errors = []
+        for o in raw_errors:
+            errors.append(SystemErrorResponse(
+                log_id=o["log_id"],
+                timestamp=datetime.fromisoformat(o["timestamp"].replace("Z", "+00:00")),
+                error_type=o["error_type"],
+                severity=o["severity"],
+                context=o["context"],
+                recovery_action=o["recovery_action"],
+                resolution_status=o["resolution_status"]
+            ))
+        return SystemErrorListResponse(errors=errors, total=len(errors))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] /errors error: {e}", exc_info=True)
+        return SystemErrorListResponse(errors=[], total=0)

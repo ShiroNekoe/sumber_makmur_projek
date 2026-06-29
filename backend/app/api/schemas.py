@@ -144,3 +144,20 @@ class SystemStatusResponse(BaseModel):
     rpc_status: str           # 'online' | 'offline' | 'simulation'
     components: List[ComponentStatus]
     timestamp: datetime
+
+
+# ─── System Error Schemas ─────────────────────────────────────────────────────
+
+class SystemErrorResponse(BaseModel):
+    log_id: str
+    timestamp: datetime
+    error_type: str
+    severity: str
+    context: str
+    recovery_action: str
+    resolution_status: str
+
+
+class SystemErrorListResponse(BaseModel):
+    errors: List[SystemErrorResponse]
+    total: int

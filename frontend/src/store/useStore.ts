@@ -88,6 +88,12 @@ interface AppStore {
   systemStatus: SystemStatus;
   walletCandidates: WalletCandidate[];
   notifications: ToastNotification[];
+  activeTab: 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics';
+  selectedSignal: any | null;
+  selectedTrade: any | null;
+  selectedCandidate: any | null;
+  selectedError: any | null;
+  errorLogs: any[];
   
   // Actions
   setConnected: (connected: boolean) => void;
@@ -103,6 +109,12 @@ interface AppStore {
   approveWalletCandidate: (address: string, action: 'approve' | 'reject') => void;
   addNotification: (message: string, type?: ToastNotification['type']) => void;
   dismissNotification: (id: string) => void;
+  setActiveTab: (tab: 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics') => void;
+  setSelectedSignal: (signal: any | null) => void;
+  setSelectedTrade: (trade: any | null) => void;
+  setSelectedCandidate: (candidate: any | null) => void;
+  setSelectedError: (error: any | null) => void;
+  setErrorLogs: (logs: any[]) => void;
 }
 
 export const useStore = create<AppStore>()((set) => ({
@@ -135,6 +147,12 @@ export const useStore = create<AppStore>()((set) => ({
   },
   walletCandidates: [],
   notifications: [],
+  activeTab: 'overview',
+  selectedSignal: null,
+  selectedTrade: null,
+  selectedCandidate: null,
+  selectedError: null,
+  errorLogs: [],
 
   setConnected: (connected) => set({ isConnected: connected }),
   
@@ -201,5 +219,12 @@ export const useStore = create<AppStore>()((set) => ({
 
   dismissNotification: (id) => set((state) => ({
     notifications: state.notifications.filter(n => n.id !== id)
-  }))
+  })),
+
+  setActiveTab: (tab) => set({ activeTab: tab }),
+  setSelectedSignal: (signal) => set({ selectedSignal: signal }),
+  setSelectedTrade: (trade) => set({ selectedTrade: trade }),
+  setSelectedCandidate: (candidate) => set({ selectedCandidate: candidate }),
+  setSelectedError: (error) => set({ selectedError: error }),
+  setErrorLogs: (logs) => set({ errorLogs: logs }),
 }))

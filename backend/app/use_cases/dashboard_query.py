@@ -217,3 +217,24 @@ class DashboardQueryService:
         except Exception as e:
             logger.error(f"[DASHBOARD QUERY] Error fetching wallet candidates: {e}")
             return []
+
+    async def get_system_errors(self, limit: int = 100) -> List[dict]:
+        """Return system error logs from the SQLite database."""
+        try:
+            db = getattr(self.trade_history_repo, "db", None)
+            if db:
+                from app.infrastructure.database.models import SystemErrorLogORM
+                orms = db.query(SystemErrorLogORM).order_by(SystemErrorLogORM.timestamp.desc()).limit(limit).all()
+                return [{
+                    "log_id": o.log_id,
+                    "timestamp": o.timestamp.isoformat(),
+                    "error_type": o.error_type,
+                    "severity": o.severity,
+                    "context": o.context,
+                    "recovery_action": o.recovery_action,
+                    "resolution_status": o.resolution_status
+                } for o in orms]
+            return []
+        except Exception as e:
+            logger.error(f"[DASHBOARD QUERY] Error fetching system errors: {e}")
+            return []
