@@ -250,7 +250,15 @@ async def lifespan(app: FastAPI):
         )
         await recovery_service.run_recovery()
         
-        monitor = SolanaWebSocketMonitor()
+        if os.getenv("SIMULATION_MODE") == "True":
+            from app.blockchain.monitor import SolanaMonitorSimulator
+            active_wallets = await wallet_repo.get_active_wallets()
+            wallet_addresses = [w.wallet_address for w in active_wallets]
+            monitor = SolanaMonitorSimulator(wallets=wallet_addresses)
+            logger.warning("[STARTUP] SIMULATION_MODE active. Running Solana Monitor Simulator instead of live WebSocket client.")
+        else:
+            monitor = SolanaWebSocketMonitor()
+            
         monitor_use_case = MonitorWalletsUseCase(wallet_repo, monitor, relevance_filter)
         await monitor_use_case.initialize_and_start()
         app.state.monitor_use_case = monitor_use_case
