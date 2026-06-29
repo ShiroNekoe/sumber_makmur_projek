@@ -171,7 +171,9 @@ async def lifespan(app: FastAPI):
             position_repo=position_repo,
             cooldown_repo=cooldown_repo,
             model_registry_repo=model_registry_repo,
-            trade_history_repo=trade_history_repo
+            trade_history_repo=trade_history_repo,
+            token_info_service=token_info_service,
+            token_safety_service=safety_service
         )
         safety_check_gate.auto_trade_executor = auto_trade_executor
         

@@ -118,7 +118,11 @@ class AutoTradeExecutor:
                         if token_address == "FailEntryTokenxxxxxxxxxxxxxxxxxxxxxxx":
                             raise IOError("pump.fun swap failed: Insufficient liquidity pool")
                             
-                        entry_price = 1.0 # mock entry price
+                        if self.token_info_service:
+                            token_info = await self.token_info_service.get_token_info(token_address)
+                            entry_price = token_info.get("price_usd", 1.0)
+                        else:
+                            entry_price = 1.0
                         slippage_estimate = 0.005 # 0.5% slippage
                         
                         # Verify slippage tolerance

@@ -116,12 +116,22 @@ class ParallelExecutionEngine:
             while not self.exited:
                 await asyncio.sleep(1.0) # Check every 1 second
 
-                # Simulating a price random walk for testing/demonstration.
-                # (Sumber harga riil/live price feed dari pump.fun/Jupiter
-                # quote API adalah pekerjaan lanjutan yang berada di luar
-                # cakupan perbaikan ini -- lihat catatan di docstring kelas.)
-                price_change = random.uniform(-0.04, 0.05) # Average upward drift
-                self.current_price = max(0.01, self.current_price * (1 + price_change))
+                # Fetch real price from DexScreener API via token_info_service
+                if self.token_info_service:
+                    try:
+                        token_info = await self.token_info_service.get_token_info(self.position.token_address)
+                        if token_info and "price_usd" in token_info:
+                            self.current_price = token_info["price_usd"]
+                        else:
+                            price_change = random.uniform(-0.02, 0.02)
+                            self.current_price = max(0.01, self.current_price * (1 + price_change))
+                    except Exception as err:
+                        logger.warning(f"[PROTECTION] Failed to fetch live price for {self.position.token_address}: {err}")
+                        price_change = random.uniform(-0.02, 0.02)
+                        self.current_price = max(0.01, self.current_price * (1 + price_change))
+                else:
+                    price_change = random.uniform(-0.02, 0.02)
+                    self.current_price = max(0.01, self.current_price * (1 + price_change))
 
                 # 1. Update Peak Price and R-multiples
                 if self.current_price > self.peak_price:
