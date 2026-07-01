@@ -325,7 +325,15 @@ class ParallelExecutionEngine:
                             if fail_exit and attempts < 3: # fail first 2 attempts for testing
                                 raise IOError("pump.fun swap failed (network timeout)")
                                 
-                        await asyncio.sleep(0.05) # Simulate execution latency
+                        from app.infrastructure.blockchain.trading_service import execute_pumpportal_swap
+                        tx_sig = await execute_pumpportal_swap(
+                            action="sell",
+                            token_mint=self.position.token_address,
+                            amount="100%",
+                            denominated_in_sol=False,
+                            slippage=slippage_tolerance * 100
+                        )
+                        logger.info(f"[PROTECTION] Exit order placed. TX: {tx_sig}")
                         exit_success = True
                     except Exception as e:
                         logger.warning(f"[PROTECTION] Exit order attempt {attempts} failed: {e}")

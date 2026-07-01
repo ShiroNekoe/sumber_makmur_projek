@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     CONFIG_VERSION_TIMESTAMP: str = datetime.now(timezone.utc).isoformat()
     CONFIG_FILE_PATH: Optional[str] = None
     
+    # Real Wallet Credentials & Exchange API Keys
+    SOLANA_WALLET_PUBLIC_KEY: Optional[str] = None
+    SOLANA_WALLET_PRIVATE_KEY: Optional[str] = None
+    PUMP_FUN_API_KEY: Optional[str] = None
+    
     model_config = SettingsConfigDict(
         case_sensitive=True,
         env_file=(".env", "backend/.env"),

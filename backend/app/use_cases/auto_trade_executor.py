@@ -130,14 +130,29 @@ class AutoTradeExecutor:
                         if slippage_estimate > max_slippage:
                             raise ValueError(f"Slippage too high: {slippage_estimate} > {max_slippage}")
                         
-                        # Mock Sign and Place Order
-                        logger.info(f"[AUTO TRADE] Signing order using local encrypted wallet keypair (attempt {attempt+1})...")
-                        await asyncio.sleep(0.05) # Simulate network/signing latency
+                        sol_price_usd = 150.0
+                        if self.token_info_service:
+                            try:
+                                sol_info = await self.token_info_service.get_token_info("So11111111111111111111111111111111111111112")
+                                if sol_info and "price_usd" in sol_info:
+                                    sol_price_usd = sol_info["price_usd"]
+                            except Exception:
+                                pass
                         
-                        # Confirm transaction (poll status)
-                        logger.info(f"[AUTO TRADE] Order placed on pump.fun. TX: mock_tx_{uuid.uuid4().hex[:12]}. Confirming...")
-                        await asyncio.sleep(0.05)
+                        amount_sol = round(position_size_usd / sol_price_usd, 4)
+                        amount_sol = max(amount_sol, 0.005)
                         
+                        # Real Sign and Place Order
+                        from app.infrastructure.blockchain.trading_service import execute_pumpportal_swap
+                        tx_sig = await execute_pumpportal_swap(
+                            action="buy",
+                            token_mint=token_address,
+                            amount=amount_sol,
+                            denominated_in_sol=True,
+                            slippage=5.0
+                        )
+                        
+                        logger.info(f"[AUTO TRADE] Order completed on pump.fun. TX: {tx_sig}")
                         order_success = True
                         break
                     except Exception as e:
