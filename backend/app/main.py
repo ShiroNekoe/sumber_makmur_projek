@@ -26,20 +26,27 @@ class StubMLPipeline(IMLPipeline):
         self.inference_engine = XGBoostInferenceEngine(model_registry_repo, trade_history_repo)
         self.safety_check_gate = safety_check_gate
 
-    async def analyze_token(self, token_address: str, wallet_source: str, confidence_boost: bool) -> None:
+    async def analyze_token(
+        self,
+        token_address: str,
+        wallet_source: str,
+        confidence_boost: bool,
+        signature: Optional[str] = None,
+        timestamp: Optional[datetime] = None
+    ) -> None:
         logger.info(
             f"[ML PIPELINE] [STUB] Triggered XGBoost inference analysis for token: {token_address} "
             f"from wallet: {wallet_source} (confidence boost: {confidence_boost})."
         )
         try:
-            # Simulate trigger event
+            # Simulate trigger event using passed signature and timestamp if available
             trigger_event = {
                 "token_address": token_address,
                 "wallet_address": wallet_source,
-                "signature": "simulated_sig_" + datetime.now(timezone.utc).strftime("%H%M%S"),
+                "signature": signature or ("simulated_sig_" + datetime.now(timezone.utc).strftime("%H%M%S")),
                 "amount_usd": 1500.0,
                 "confidence_boost": confidence_boost,
-                "timestamp_utc": datetime.now(timezone.utc)
+                "timestamp_utc": timestamp or datetime.now(timezone.utc)
             }
             # Extract features!
             fv = await self.feature_extractor.extract_features(trigger_event)

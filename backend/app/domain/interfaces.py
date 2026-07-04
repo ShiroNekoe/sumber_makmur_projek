@@ -169,8 +169,16 @@ class ITokenInfoService(ABC):
 
 class IMLPipeline(ABC):
     @abstractmethod
-    async def analyze_token(self, token_address: str, wallet_source: str, confidence_boost: bool) -> None:
+    async def analyze_token(
+        self,
+        token_address: str,
+        wallet_source: str,
+        confidence_boost: bool,
+        signature: Optional[str] = None,
+        timestamp: Optional[datetime] = None
+    ) -> None:
         pass
+
 
 
 class IFeatureExtractor(ABC):

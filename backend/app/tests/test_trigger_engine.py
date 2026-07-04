@@ -119,7 +119,9 @@ class TestTriggerEngine(unittest.IsolatedAsyncioTestCase):
         self.mock_ml_pipeline.analyze_token.assert_called_with(
             token_address="TokenAddressxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             wallet_source="Wha1eA11111111111111111111111111111111111",
-            confidence_boost=False
+            confidence_boost=False,
+            signature="sig_or_mode",
+            timestamp=event["timestamp_utc"]
         )
         self.mock_cooldown_repo.set_cooldown.assert_called_once()
 
@@ -148,8 +150,11 @@ class TestTriggerEngine(unittest.IsolatedAsyncioTestCase):
         self.mock_ml_pipeline.analyze_token.assert_called_with(
             token_address=token,
             wallet_source="Wha1eB22222222222222222222222222222222222",
-            confidence_boost=True
+            confidence_boost=True,
+            signature="sig_and_2",
+            timestamp=event_b["timestamp_utc"]
         )
+
 
     async def test_trigger_and_mode_timeout(self):
         settings.TRIGGER_MODE = "AND"

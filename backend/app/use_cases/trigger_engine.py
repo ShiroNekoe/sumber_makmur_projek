@@ -117,7 +117,9 @@ class TriggerEngine(ITriggerEngine):
                 await self.ml_pipeline.analyze_token(
                     token_address=token_mint,
                     wallet_source=wallet_address,
-                    confidence_boost=confidence_boost
+                    confidence_boost=confidence_boost,
+                    signature=signature,
+                    timestamp=timestamp
                 )
                 
                 # 5. Set Cooldown for this wallet/token pair using the event timestamp
