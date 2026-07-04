@@ -17,6 +17,7 @@ logger = logging.getLogger("app.main")
 
 
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 
 class StubMLPipeline(IMLPipeline):
