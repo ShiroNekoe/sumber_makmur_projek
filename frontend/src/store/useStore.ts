@@ -23,6 +23,12 @@ export interface LiveSignal {
   timestamp: string;
   details: string;
   safetyPassed: boolean;
+  features?: any;
+  // Extra fields for Signal Drill-Down modal
+  token_address?: string;
+  token_symbol?: string;
+  token_name?: string;
+  dex_url?: string;
 }
 
 export interface TradeLogEntry {
@@ -31,6 +37,8 @@ export interface TradeLogEntry {
   token: string;
   pnl: string; // e.g. "+12%" or "-2%"
   isPositive: boolean;
+  holdingTime?: string;   // e.g. "12 min"
+  exitReason?: string;    // e.g. "trailing_tp", "stop_loss"
 }
 
 export interface ConfidenceHistoryPoint {
@@ -88,12 +96,14 @@ interface AppStore {
   systemStatus: SystemStatus;
   walletCandidates: WalletCandidate[];
   notifications: ToastNotification[];
-  activeTab: 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics';
+  activeTab: 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics' | 'portfolio';
   selectedSignal: any | null;
   selectedTrade: any | null;
   selectedCandidate: any | null;
   selectedError: any | null;
   errorLogs: any[];
+  portfolio: any | null;
+  activeWallets: any[];
   
   // Actions
   setConnected: (connected: boolean) => void;
@@ -102,6 +112,7 @@ interface AppStore {
   setConfidenceGaugeScore: (score: number | null) => void;
   setConfidenceHistory: (points: ConfidenceHistoryPoint[]) => void;
   addTrade: (trade: TradeLogEntry) => void;
+  setTradeLog: (trades: TradeLogEntry[]) => void;
   updateMetrics: (metrics: Partial<MetricsState>) => void;
   setSystemStatus: (status: SystemStatus) => void;
   setWalletCandidates: (candidates: WalletCandidate[]) => void;
@@ -109,16 +120,20 @@ interface AppStore {
   approveWalletCandidate: (address: string, action: 'approve' | 'reject') => void;
   addNotification: (message: string, type?: ToastNotification['type']) => void;
   dismissNotification: (id: string) => void;
-  setActiveTab: (tab: 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics') => void;
+  setActiveTab: (tab: 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics' | 'portfolio') => void;
   setSelectedSignal: (signal: any | null) => void;
   setSelectedTrade: (trade: any | null) => void;
   setSelectedCandidate: (candidate: any | null) => void;
   setSelectedError: (error: any | null) => void;
   setErrorLogs: (logs: any[]) => void;
+  setPortfolio: (portfolio: any) => void;
+  setActiveWallets: (wallets: any[]) => void;
 }
 
 export const useStore = create<AppStore>()((set) => ({
   isConnected: false,
+  portfolio: null,
+  activeWallets: [],
   walletMonitor: {
     whaleA: { active: false, txCount: "--" },
     whaleB: { active: false, txCount: "--" },
@@ -179,8 +194,13 @@ export const useStore = create<AppStore>()((set) => ({
   setConfidenceHistory: (points) => set({ confidenceHistory: points }),
   
   addTrade: (trade) => set((state) => ({
-    tradeLog: [trade, ...state.tradeLog].slice(0, 50)
+    // Deduplicate by id before prepending
+    tradeLog: state.tradeLog.some(t => t.id === trade.id)
+      ? state.tradeLog
+      : [trade, ...state.tradeLog].slice(0, 50)
   })),
+
+  setTradeLog: (trades) => set({ tradeLog: trades }),
   
   updateMetrics: (newMetrics) => set((state) => ({
     metrics: { ...state.metrics, ...newMetrics }
@@ -199,9 +219,8 @@ export const useStore = create<AppStore>()((set) => ({
   }),
 
   approveWalletCandidate: (address, action) => set((state) => ({
-    walletCandidates: state.walletCandidates.map(c => 
-      c.wallet_address === address ? { ...c, status: action === 'approve' ? 'approved' : 'rejected' } : c
-    )
+    // Remove candidate from list after approve/reject — it should no longer appear in pending list
+    walletCandidates: state.walletCandidates.filter(c => c.wallet_address !== address)
   })),
 
   addNotification: (message, type = 'info') => set((state) => {
@@ -222,9 +241,11 @@ export const useStore = create<AppStore>()((set) => ({
   })),
 
   setActiveTab: (tab) => set({ activeTab: tab }),
+  setPortfolio: (portfolio) => set({ portfolio }),
   setSelectedSignal: (signal) => set({ selectedSignal: signal }),
   setSelectedTrade: (trade) => set({ selectedTrade: trade }),
   setSelectedCandidate: (candidate) => set({ selectedCandidate: candidate }),
   setSelectedError: (error) => set({ selectedError: error }),
   setErrorLogs: (logs) => set({ errorLogs: logs }),
+  setActiveWallets: (activeWallets) => set({ activeWallets }),
 }))

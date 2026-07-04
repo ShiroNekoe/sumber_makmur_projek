@@ -81,7 +81,12 @@ class ConnectionManager:
         Legacy broadcast method — wraps raw dict into a signal_new event.
         Kept for backward compatibility with SafetyCheckGate's existing calls.
         """
-        event_type = message.get("event", "signal_new")
+        if message.get("type") == "system_alert" and isinstance(message.get("data"), dict):
+            event_type = message["data"].get("event", "system_alert")
+            actual_message = message["data"]
+        else:
+            event_type = message.get("event") or message.get("type") or "signal_new"
+            actual_message = message
 
         # Map legacy event names to new structured types
         type_map = {
@@ -90,7 +95,7 @@ class ConnectionManager:
         }
         ws_event_type = type_map.get(event_type, event_type)
 
-        await self.broadcast_event(ws_event_type, message)
+        await self.broadcast_event(ws_event_type, actual_message)
 
     async def send_personal_message(self, message: str, websocket: WebSocket) -> None:
         """Send a text message to a specific client."""

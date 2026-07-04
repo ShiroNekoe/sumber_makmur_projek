@@ -24,4 +24,14 @@ Thumbs.db
 .idea/
 .vscode/
 
+# SQLite databases & backups
+*.db
+*.db-shm
+*.db-wal
+backend/sumber_makmur_backup.db
+sumber_makmur_backup.db
+backend/0.21.0
 
+# Dynamic XGBoost model versions (keep only v0.json if necessary)
+backend/models/v[0-9]*.json
+models/v[0-9]*.json

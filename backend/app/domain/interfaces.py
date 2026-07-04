@@ -64,11 +64,11 @@ class IPositionRepository(ABC):
 
 class ITradeHistoryRepository(ABC):
     @abstractmethod
-    async def get_closed_trades(self, limit: int = 100, offset: int = 0) -> List[ClosedTrade]:
+    async def get_closed_trades(self, limit: int = 100, offset: int = 0, exclude_bootstrap: bool = False) -> List[ClosedTrade]:
         pass
 
     @abstractmethod
-    async def get_closed_trades_count(self) -> int:
+    async def get_closed_trades_count(self, exclude_bootstrap: bool = False) -> int:
         pass
 
     @abstractmethod

@@ -72,7 +72,7 @@ class TestSafetyCheckGate(unittest.IsolatedAsyncioTestCase):
         self.mock_filter_log_repo.add_log.assert_not_called()
 
     async def test_low_confidence_does_not_broadcast_alert(self):
-        self.pred.confidence_score = 0.60  # below 0.75 threshold
+        self.pred.confidence_score = 0.40  # below 0.50 threshold
         res = await self.gate.evaluate_safety(self.pred, self.fv)
         
         self.assertTrue(res.passed) # safety still passes
@@ -80,23 +80,26 @@ class TestSafetyCheckGate(unittest.IsolatedAsyncioTestCase):
         self.mock_filter_log_repo.add_log.assert_called_once() # logs it as low confidence
 
     async def test_unsafe_lp_fails_safety(self):
+        # LP not locked is now ALLOWED per config (require_lp_locked=false)
+        # So safety should PASS even when LP is not locked
         self.pred.token_address = "UnsafeLPOpenxxxxxxxxxxxxxxxxxxxxxxxxx"
         res = await self.gate.evaluate_safety(self.pred, self.fv)
         
-        self.assertFalse(res.passed)
-        self.assertEqual(res.reason, "lp_not_locked")
-        ws_manager.broadcast.assert_not_called()
-        self.mock_filter_log_repo.add_log.assert_called_once()
+        self.assertTrue(res.passed)  # LP not locked no longer causes failure
+        # Broadcast happens if confidence passes threshold
+        self.mock_filter_log_repo.add_log.assert_not_called()
 
     async def test_unsafe_contract_fails_safety(self):
+        # Contract not verified is now ALLOWED per config (require_contract_verified=false)
+        # Solana does not have EVM-style contract verification
         self.pred.token_address = "UnsafeContractxxxxxxxxxxxxxxxxxxxxxxx"
         res = await self.gate.evaluate_safety(self.pred, self.fv)
         
-        self.assertFalse(res.passed)
-        self.assertEqual(res.reason, "contract_not_verified")
-        ws_manager.broadcast.assert_not_called()
+        self.assertTrue(res.passed)  # Contract not verified no longer causes failure
 
     async def test_unsafe_holders_fails_safety(self):
+        # Holder check uses new threshold of 50% (max_top_10_holders_share=0.50)
+        # UnsafeHolders mock returns top_10_holders_share > 0.50 to trigger failure
         self.pred.token_address = "UnsafeHoldersxxxxxxxxxxxxxxxxxxxxxxxx"
         res = await self.gate.evaluate_safety(self.pred, self.fv)
         

@@ -146,3 +146,22 @@ class SystemErrorLogORM(Base):
     recovery_action = Column(String, nullable=False)
     resolution_status = Column(String, nullable=False)
 
+
+class EquitySnapshotORM(Base):
+    __tablename__ = "equity_snapshots"
+
+    snapshot_id = Column(String, primary_key=True)
+    wallet_address = Column(String, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    portfolio_value_usd = Column(Float, nullable=False)
+    sol_balance = Column(Float, nullable=False)
+    sol_price_usd = Column(Float, nullable=False)
+    token_holdings_value_usd = Column(Float, nullable=False)
+    realized_pnl_usd = Column(Float, nullable=False)
+    unrealized_pnl_usd = Column(Float, nullable=False)
+    total_pnl_usd = Column(Float, nullable=False)
+    trigger_type = Column(String, nullable=False)
+    trigger_reason = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+
+

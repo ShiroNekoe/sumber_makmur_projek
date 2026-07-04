@@ -27,13 +27,22 @@ class SolanaTokenInfoService(ITokenInfoService):
         Fetches token information (pool USD depth, age in minutes, volume 24h).
         Falls back to dummy/simulated data if the network is unreachable.
         """
-        # If it's the default native/wrapped SOL, return high liquidity and old age
+        # If it's the default native/wrapped SOL, return high liquidity, old age and real-time price
         if token_address == "So11111111111111111111111111111111111111112":
+            sol_price_live = 77.34  # fallback to verified market price
+            try:
+                # Query DexScreener dynamically for Wrapped SOL
+                fetched_info = await self._fetch_from_dexscreener(token_address)
+                if fetched_info and fetched_info.get("price_usd", 0.0) > 0.0:
+                    sol_price_live = fetched_info["price_usd"]
+            except Exception:
+                pass
             return {
                 "age_minutes": 100000.0,
                 "liquidity_usd": 50000000.0,
                 "volume_24h": 10000000.0,
-                "token_symbol": "SOL"
+                "token_symbol": "SOL",
+                "price_usd": sol_price_live
             }
 
         # Check in-memory cache with 60s TTL
@@ -69,22 +78,35 @@ class SolanaTokenInfoService(ITokenInfoService):
             self.cache[token_address] = (time.time(), token_info)
             return token_info
 
-        # Offline/Testing Fallback
-        logger.warning(
-            f"[TOKEN SERVICE] Failed to fetch live data for {token_address}. "
-            f"Using simulated offline fallback data."
-        )
-        # Generate simulated values that pass settings limits
-        fallback_data = {
-            "age_minutes": 120.0,          # 2 hours old
-            "liquidity_usd": 15000.0,      # $15k liquidity
-            "volume_24h": 3000.0,          # $3k volume
-            "token_symbol": "MOCK_TOKEN",
-            "price_usd": 1.0
-        }
-        # Cache the fallback data temporarily too to avoid spamming failed requests
-        self.cache[token_address] = (time.time(), fallback_data)
-        return fallback_data
+        # Failed to fetch live data, return None to fail closed
+        if os.getenv("SIMULATION_MODE") == "True":
+            logger.warning(
+                f"[TOKEN SERVICE] Failed to fetch live data for {token_address}. "
+                f"Using simulated offline fallback data (SIMULATION_MODE)."
+            )
+            symbol = "MOCK_TOKEN"
+            if token_address == "DezXAZ8z7PnrnRJjz3wXBoRgixrfNg7yFLBnRx4S75Jb":
+                symbol = "BONK"
+            elif token_address == "EKpQGSJtjMFqKZ9KQGWjhoxjq2WqU1AF9Z23J1x584":
+                symbol = "WIF"
+            elif token_address == "So11111111111111111111111111111111111111112":
+                symbol = "WSOL"
+            elif token_address == "CzLSujW7ZJuY7oL4b5C32hiyUeZSt84b5F08Suj752b":
+                symbol = "HYPE"
+
+            fallback_data = {
+                "age_minutes": 120.0,          # 2 hours old
+                "liquidity_usd": 15000.0,      # $15k liquidity
+                "volume_24h": 3000.0,          # $3k volume
+                "token_symbol": symbol,
+                "symbol": symbol,
+                "price_usd": 1.0
+            }
+            self.cache[token_address] = (time.time(), fallback_data)
+            return fallback_data
+        else:
+            logger.error(f"[TOKEN SERVICE] Failed to fetch live data for {token_address}. No fallback allowed.")
+            return None
 
     async def _fetch_from_dexscreener(self, token_address: str) -> Optional[dict]:
         """Fetches liquidity, volume, and creation time from DexScreener REST API in a separate thread."""
@@ -188,7 +210,7 @@ class SolanaTokenSafetyService(ITokenSafetyService):
             return {
                 "liquidity_locked": True,
                 "contract_verified": True,
-                "top_10_holders_share": 0.35,  # 35% (>= 20% threshold)
+                "top_10_holders_share": 0.80,  # 80% (>= 50% new threshold)
                 "mint_authority_revoked": True
             }
         elif token_address == "UnsafeMintxxxxxxxxxxxxxxxxxxxxxxxxxxx":

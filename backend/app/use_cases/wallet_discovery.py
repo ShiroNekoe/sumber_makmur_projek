@@ -82,9 +82,11 @@ class WalletDiscoveryService:
 
         logger.info(f"[WALLET DISCOVERY] Analyzing token {token_address} trading window ±10m around whale {wallet_source}")
 
-        # Check if RPC is in simulation/offline mode or if we are running in simulator/mock
+        # Check if running in simulation/offline mode
+        # Use SIMULATION_MODE env var as the canonical flag — NOT the RPC URL name
+        import os
         is_simulation = (
-            "api.mainnet-beta.solana.com" not in settings.SOLANA_RPC_URL
+            os.getenv("SIMULATION_MODE", "False").lower() == "true"
             or "mock" in self.token_info_service.__class__.__name__.lower()
             or "sim" in self.token_info_service.__class__.__name__.lower()
         )
@@ -369,10 +371,13 @@ class WalletDiscoveryService:
                 sells = sum(1 for t in trades if t == "SELL")
                 buys = sum(1 for t in trades if t == "BUY")
                 
-                if buys > 0:
-                    win_rate = min(1.0, sells / buys)
+                if buys > 0 and sells > 0:
+                    # Only compute win rate if we have a meaningful buy/sell pair
+                    win_rate = min(0.95, sells / buys)  # cap at 95% to avoid displaying false 100%
                     return win_rate
-            return 0.50 # fallback neutral win rate
+                # Otherwise: not enough paired data to compute meaningful win rate
+                return None
+            return None  # Insufficient data — will be labeled as "unverified"
             
         except Exception as e:
             logger.warning(f"[WALLET DISCOVERY] Could not verify profit for {wallet_address}: {e}")

@@ -189,12 +189,18 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
             model_version=orm.model_version
         )
 
-    async def get_closed_trades(self, limit: int = 100, offset: int = 0) -> List[ClosedTrade]:
-        orms = self.db.query(ClosedTradeORM).order_by(ClosedTradeORM.exit_ts.desc()).limit(limit).offset(offset).all()
+    async def get_closed_trades(self, limit: int = 100, offset: int = 0, exclude_bootstrap: bool = False) -> List[ClosedTrade]:
+        query = self.db.query(ClosedTradeORM)
+        if exclude_bootstrap:
+            query = query.filter((ClosedTradeORM.is_bootstrap == False) | (ClosedTradeORM.is_bootstrap == None))
+        orms = query.order_by(ClosedTradeORM.exit_ts.desc()).limit(limit).offset(offset).all()
         return [self._to_domain(o) for o in orms]
 
-    async def get_closed_trades_count(self) -> int:
-        return self.db.query(ClosedTradeORM).count()
+    async def get_closed_trades_count(self, exclude_bootstrap: bool = False) -> int:
+        query = self.db.query(ClosedTradeORM)
+        if exclude_bootstrap:
+            query = query.filter((ClosedTradeORM.is_bootstrap == False) | (ClosedTradeORM.is_bootstrap == None))
+        return query.count()
 
     async def add_closed_trade(self, trade: ClosedTrade) -> None:
         orm = ClosedTradeORM(

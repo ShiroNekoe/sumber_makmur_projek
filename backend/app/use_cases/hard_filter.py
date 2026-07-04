@@ -63,7 +63,8 @@ class TokenAgeLiquidityHardFilter:
             is_live_network = "api.mainnet-beta.solana.com" in settings.SOLANA_RPC_URL
             is_fallback_token = symbol == "MOCK_TOKEN" and token_mint != "MOCK_TOKEN_ADDR"
             
-            if is_live_network and is_fallback_token:
+            import os
+            if is_live_network and is_fallback_token and os.getenv("SIMULATION_MODE") != "True":
                 passed = False
                 reason = "dexscreener_failed"
             elif age_minutes < settings.MIN_TOKEN_AGE_MINUTES:

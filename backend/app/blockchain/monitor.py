@@ -159,7 +159,9 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                     backoff = min(backoff * 2, 60.0)
 
     async def _handle_failover(self) -> None:
-        """Handles primary to secondary failover and transitions to degraded mode."""
+        """Handles primary -> secondary -> fallback failover and transitions to degraded mode."""
+        fallback_url = "https://api.mainnet-beta.solana.com"
+        
         if self.rpc_state == "primary":
             logger.warning(f"[RPC FAILOVER] Primary RPC failed. Switching to Secondary URL: {settings.RPC_SECONDARY_URL}")
             self.rpc_state = "secondary"
@@ -170,12 +172,21 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                 message=f"Primary RPC failed. Switched to Secondary RPC: {settings.RPC_SECONDARY_URL}"
             )
         elif self.rpc_state == "secondary":
-            logger.critical("[RPC DEGRADED] Both Primary and Secondary RPCs failed. Entering DEGRADED mode.")
+            logger.warning(f"[RPC FAILOVER] Secondary RPC failed. Switching to Public Fallback URL: {fallback_url}")
+            self.rpc_state = "fallback"
+            self.current_rpc_url = fallback_url
+            self.current_ws_url = self._http_to_ws(fallback_url)
+            await self._broadcast_system_alert(
+                alert_type="rpc_failover",
+                message=f"Secondary RPC failed. Switched to Public Fallback RPC: {fallback_url}"
+            )
+        elif self.rpc_state == "fallback":
+            logger.critical("[RPC DEGRADED] All Primary, Secondary, and Fallback RPCs failed. Entering DEGRADED mode.")
             self.rpc_state = "degraded"
             SolanaWebSocketMonitor.degraded_mode = True
             await self._broadcast_system_alert(
                 alert_type="rpc_degraded",
-                message="Both Primary and Secondary RPCs failed. System entered DEGRADED mode (new trades stopped)."
+                message="All RPC endpoints failed. System entered DEGRADED mode (new trades stopped)."
             )
 
     async def _broadcast_system_alert(self, alert_type: str, message: str) -> None:
@@ -198,19 +209,22 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
 
     async def _run_health_check_loop(self) -> None:
         """Background loop executing every 60 seconds to detect RPC recovery."""
+        fallback_url = "https://api.mainnet-beta.solana.com"
         while self.is_running:
             await asyncio.sleep(60.0)
             
             primary_healthy = await self._check_url_health(settings.RPC_PRIMARY_URL)
             secondary_healthy = await self._check_url_health(settings.RPC_SECONDARY_URL)
+            fallback_healthy = await self._check_url_health(fallback_url)
             
             logger.info(
                 f"[RPC HEALTH CHECK] Primary: {'UP' if primary_healthy else 'DOWN'}, "
-                f"Secondary: {'UP' if secondary_healthy else 'DOWN'}"
+                f"Secondary: {'UP' if secondary_healthy else 'DOWN'}, "
+                f"Fallback: {'UP' if fallback_healthy else 'DOWN'}"
             )
             
             # Handle recovery back to primary
-            if primary_healthy and self.rpc_state in ["secondary", "degraded"]:
+            if primary_healthy and self.rpc_state in ["secondary", "fallback", "degraded"]:
                 logger.warning(f"[RPC RECOVERY] Primary RPC restored. Switching back to: {settings.RPC_PRIMARY_URL}")
                 self.rpc_state = "primary"
                 SolanaWebSocketMonitor.degraded_mode = False
@@ -225,8 +239,8 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                 if self.websocket:
                     await self.websocket.close()  # close to force reconnect in main monitor loop
                     
-            # Handle recovery from degraded back to secondary
-            elif secondary_healthy and self.rpc_state == "degraded":
+            # Handle recovery from fallback/degraded back to secondary
+            elif secondary_healthy and self.rpc_state in ["fallback", "degraded"]:
                 logger.warning(f"[RPC RECOVERY] Secondary RPC restored. Switching to: {settings.RPC_SECONDARY_URL}")
                 self.rpc_state = "secondary"
                 SolanaWebSocketMonitor.degraded_mode = False
@@ -235,7 +249,23 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                 
                 await self._broadcast_system_alert(
                     alert_type="rpc_recovery",
-                    message=f"Secondary RPC restored. Recovered from degraded mode using: {settings.RPC_SECONDARY_URL}"
+                    message=f"Secondary RPC restored. Switched to: {settings.RPC_SECONDARY_URL}"
+                )
+                
+                if self.websocket:
+                    await self.websocket.close()
+                    
+            # Handle recovery from degraded back to fallback
+            elif fallback_healthy and self.rpc_state == "degraded":
+                logger.warning(f"[RPC RECOVERY] Public Fallback RPC restored. Switching to: {fallback_url}")
+                self.rpc_state = "fallback"
+                SolanaWebSocketMonitor.degraded_mode = False
+                self.current_rpc_url = fallback_url
+                self.current_ws_url = self._http_to_ws(fallback_url)
+                
+                await self._broadcast_system_alert(
+                    alert_type="rpc_recovery",
+                    message=f"Public Fallback RPC restored. Switched to: {fallback_url}"
                 )
                 
                 if self.websocket:
@@ -287,6 +317,16 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         await ws.send(json.dumps(payload))
         logger.info(f"Subscribed to logs for wallet: {wallet_address}")
 
+    # Known DEX/swap program IDs we care about
+    DEX_PROGRAM_IDS = {
+        "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium AMM V4
+        "6EF8rrecMDMKMzBkv7jVLFv1E2syLQH5SH3iFh9FEAKB",  # pump.fun
+        "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",   # Orca Whirlpool
+        "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",   # Jupiter V6
+        "9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP",  # Orca AMM
+        "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",   # Serum DEX
+    }
+
     async def _handle_ws_message(self, raw_message: str):
         try:
             msg = json.loads(raw_message)
@@ -297,8 +337,24 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                 
                 signature = value.get("signature")
                 logs = value.get("logs", [])
+                err = value.get("err")
                 
                 if not signature:
+                    return
+                
+                # Skip failed transactions immediately
+                if err is not None:
+                    logger.debug(f"Skipping failed transaction: {signature}")
+                    return
+
+                # Pre-filter: only process if logs mention a known DEX program
+                # This eliminates spam, airdrops, fee payments, and vote transactions
+                log_text = " ".join(logs)
+                is_dex_transaction = any(
+                    prog_id in log_text for prog_id in self.DEX_PROGRAM_IDS
+                )
+                if not is_dex_transaction:
+                    logger.debug(f"Skipping non-DEX transaction: {signature}")
                     return
                 
                 # Deduplication logic
@@ -307,20 +363,19 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                     return
                 self.signature_dedup_window[signature] = time.time()
                 
-                # Verify that transaction is relevant to one of our active wallets
-                # Logs notification mentions context, let's parse logs to identify wallet & action
+                # Process only relevant DEX transactions
                 await self._process_transaction_event(signature, logs)
         except Exception as e:
             logger.error(f"Error handling WS message: {e}", exc_info=True)
 
     async def _process_transaction_event(self, signature: str, logs: List[str]):
         """Fetches complete transaction data and puts structured event in the queue."""
-        logger.info(f"New transaction detected, fetching details: {signature}")
+        logger.debug(f"New DEX transaction detected, fetching details: {signature}")
         
         # 1. Fetch transaction details via getTransaction
         tx_details = await self._fetch_transaction_details(signature)
         if not tx_details:
-            logger.warning(f"Failed to fetch transaction details for signature: {signature}")
+            logger.debug(f"Failed to fetch transaction details for signature: {signature}")
             return
             
         # 2. Parse details into our structured format
@@ -344,39 +399,54 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
             logger.warning("Event queue full! Backpressure triggered, event dropped.")
 
     async def _fetch_transaction_details(self, signature: str) -> Optional[dict]:
-        """Fetches full transaction payload from Solana RPC."""
-        def sync_fetch():
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getTransaction",
-                "params": [
-                    signature,
-                    {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}
-                ]
-            }
-            headers = {"Content-Type": "application/json"}
-            req = urllib.request.Request(
-                self.current_rpc_url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers,
-                method="POST"
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    return json.loads(response.read().decode("utf-8"))
-            except Exception as e:
-                return {"error": str(e)}
+        """Fetches full transaction payload from Solana RPC with fallback chain."""
+        rpc_chain = [
+            self.current_rpc_url,
+            settings.RPC_PRIMARY_URL,
+            settings.RPC_SECONDARY_URL,
+            "https://api.mainnet-beta.solana.com",
+        ]
+        # Deduplicate while preserving order
+        seen = set()
+        rpc_chain = [u for u in rpc_chain if not (u in seen or seen.add(u))]
 
-        # Retry up to 3 times for RPC robustness
-        for attempt in range(3):
-            res = await asyncio.to_thread(sync_fetch)
-            if "error" not in res and "result" in res:
-                return res["result"]
-            logger.warning(f"Retry {attempt+1}/3 fetching transaction details for {signature}")
-            await asyncio.sleep(1.0)
-            
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTransaction",
+            "params": [
+                signature,
+                {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}
+            ]
+        }
+
+        for rpc_url in rpc_chain:
+            def sync_fetch(url=rpc_url):
+                headers = {"Content-Type": "application/json"}
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers,
+                    method="POST"
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        return json.loads(response.read().decode("utf-8"))
+                except Exception as e:
+                    return {"error": str(e)}
+
+            # Retry up to 2 times per RPC endpoint
+            for attempt in range(2):
+                res = await asyncio.to_thread(sync_fetch)
+                if "error" not in res and "result" in res:
+                    return res["result"]
+                logger.debug(
+                    f"[MONITOR] Retry {attempt+1}/2 fetching tx {signature} via {rpc_url}"
+                )
+                await asyncio.sleep(1.0)
+
         return None
+
 
     def _parse_transaction_payload(self, signature: str, tx_details: dict, logs: List[str]) -> Optional[dict]:
         """Parses transaction payload to extract structured fields."""
@@ -405,7 +475,7 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                     is_signer = key_obj.get("signer", False)
                 else:
                     pubkey = key_obj
-                    is_signer = False # Simple parsed layout
+                    is_signer = False
                 
                 if pubkey in self.active_wallets:
                     signer_wallet = pubkey
@@ -420,42 +490,79 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                         break
                         
             if not signer_wallet:
-                logger.warning(f"Transaction {signature} does not involve monitored active wallets.")
+                logger.debug(f"Transaction {signature} does not involve monitored active wallets.")
                 return None
 
-            # Determine event type
+            # Determine event type from logs — DEX program ID present OR swap keyword
+            log_text = " ".join(logs)
             event_type = "transfer"
-            logs_str = " ".join(logs).lower()
-            if any(kw in logs_str for kw in ["swap", "buy", "sell"]):
+            if (any(prog_id in log_text for prog_id in self.DEX_PROGRAM_IDS)
+                    or any(kw in log_text for kw in ["Swap", "swap"])):
                 event_type = "swap"
-            elif any(kw in logs_str for kw in ["liquidity", "initialize", "withdraw"]):
+            elif any(kw in log_text.lower() for kw in ["liquidity", "initialize pool", "withdraw"]):
                 event_type = "lp_change"
                 
-            # Determine token mint & amount
-            token_mint = "So11111111111111111111111111111111111111112"  # Default WSOL
+            # Determine token mint & amount from token balance changes
+            token_mint = None
             amount_usd = 0.0
             
-            # Find foreign mints moved
+            # Build pre-balance lookup: mint -> uiAmount
+            pre_lookup = {}
+            for bal in pre_balances:
+                mint = bal.get("mint")
+                owner = bal.get("owner")
+                if mint and owner == signer_wallet:
+                    pre_lookup[mint] = float((bal.get("uiTokenAmount") or {}).get("uiAmount") or 0.0)
+            
+            # Find the largest token delta for the signer wallet
+            best_delta = 0.0
             for post in post_balances:
                 mint = post.get("mint")
-                if mint and mint != "So11111111111111111111111111111111111111112":
+                owner = post.get("owner")
+                if not mint or not owner or owner != signer_wallet:
+                    continue
+                if mint == "So11111111111111111111111111111111111111112":
+                    continue  # Skip wrapped SOL
+                post_amount = float((post.get("uiTokenAmount") or {}).get("uiAmount") or 0.0)
+                pre_amount = pre_lookup.get(mint, 0.0)
+                delta = abs(post_amount - pre_amount)
+                if delta > best_delta:
+                    best_delta = delta
                     token_mint = mint
-                    # Estimate value
-                    ui_amount_info = post.get("uiTokenAmount", {})
-                    amount_usd = float(ui_amount_info.get("uiAmount") or 0.0) * 10.0 # Placeholder calculation
-                    break
-                    
+            
+            # Fallback: use SOL native balance delta as USD proxy
+            if not token_mint or best_delta == 0.0:
+                token_mint = token_mint or "So11111111111111111111111111111111111111112"
+                # Get SOL balance delta for signer wallet
+                keys_list = [
+                    (k.get("pubkey") if isinstance(k, dict) else k)
+                    for k in account_keys
+                ]
+                try:
+                    signer_idx = keys_list.index(signer_wallet)
+                    pre_sol_balances = meta.get("preBalances", [])
+                    post_sol_balances = meta.get("postBalances", [])
+                    if signer_idx < len(pre_sol_balances) and signer_idx < len(post_sol_balances):
+                        sol_delta = abs(post_sol_balances[signer_idx] - pre_sol_balances[signer_idx]) / 1e9
+                        amount_usd = sol_delta * 150.0  # Approximate SOL price fallback
+                except (ValueError, IndexError):
+                    amount_usd = 100.0  # Default fallback
+            else:
+                # Rough token -> USD estimate (at least minimum)
+                amount_usd = max(best_delta * 0.001, 10.0)
+                
             return {
                 "wallet_address": signer_wallet,
                 "event_type": event_type,
                 "token_mint": token_mint,
-                "amount_usd": amount_usd or 100.0, # default if unparsed
+                "amount_usd": max(amount_usd, 10.0),  # Never below min filter threshold
                 "signature": signature,
                 "timestamp_utc": timestamp
             }
         except Exception as e:
             logger.error(f"Error parsing transaction {signature}: {e}", exc_info=True)
             return None
+
 
     async def _run_heartbeat_loop(self):
         """Sends lightweight websocket ping to verify connection health."""

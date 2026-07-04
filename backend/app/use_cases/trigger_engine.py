@@ -51,14 +51,18 @@ class TriggerEngine(ITriggerEngine):
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
 
-        # 1. Cooldown Check
-        is_in_cooldown = await self._check_cooldown(wallet_address, token_mint)
+        # 1. Cooldown Check — returns (is_in_cooldown, was_just_cleared)
+        is_in_cooldown, cooldown_was_cleared = await self._check_cooldown(wallet_address, token_mint)
         if is_in_cooldown:
             logger.info(
                 f"[TRIGGER ENGINE] [IGNORED] Signature: {signature}. "
                 f"Pair ({wallet_address}, {token_mint}) is currently in cooldown."
             )
             return
+
+        # Propagate the cleared flag so downstream TradeGuard skips idempotency re-check
+        if cooldown_was_cleared:
+            event_data["cooldown_already_cleared"] = True
 
         # 2. Hard Filters Check (Token Age & Liquidity Floor) - Skip if F-13 already processed this event
         if "token_age_minutes" not in event_data or "liquidity_pool_depth" not in event_data:
@@ -119,24 +123,29 @@ class TriggerEngine(ITriggerEngine):
                 # 5. Set Cooldown for this wallet/token pair
                 await self._set_cooldown(wallet_address, token_mint)
 
-    async def _check_cooldown(self, wallet_address: str, token_mint: str) -> bool:
+    async def _check_cooldown(self, wallet_address: str, token_mint: str) -> tuple[bool, bool]:
+        """
+        Returns (is_in_cooldown: bool, cooldown_was_just_cleared: bool).
+        The second value indicates the cooldown was expired and just deleted —
+        downstream TradeGuard must skip idempotency re-check for this event.
+        """
         cooldown = await self.cooldown_repo.get_cooldown(wallet_address, token_mint)
         if not cooldown:
-            return False
+            return False, False
 
         # If active_position_id is linked, check if the position is still active
         if cooldown.active_position_id:
             if self.position_repo:
                 pos = await self.position_repo.get_position(cooldown.active_position_id)
                 if pos and pos.state in ["OPEN", "PENDING_ENTRY", "EXITING"]:
-                    return True
+                    return True, False
                 else:
                     # Position closed or failed, reset cooldown
                     logger.info(f"[TRIGGER ENGINE] Cooldown reset: linked position {cooldown.active_position_id} is closed.")
                     await self.cooldown_repo.delete_cooldown(wallet_address, token_mint)
-                    return False
+                    return False, True  # cleared=True → TradeGuard must not re-block
             # Fallback if position_repo not injected
-            return True
+            return True, False
         else:
             # Active position is None (pending execution phase). Use a 5-minute timeout.
             last_ts = cooldown.last_trigger_ts
@@ -144,11 +153,11 @@ class TriggerEngine(ITriggerEngine):
                 last_ts = last_ts.replace(tzinfo=timezone.utc)
             elapsed = (datetime.now(timezone.utc) - last_ts).total_seconds()
             if elapsed < 300.0:  # 5 minutes pending window
-                return True
+                return True, False
             else:
                 logger.warning(f"[TRIGGER ENGINE] Cooldown pending timeout for ({wallet_address}, {token_mint}). Resetting.")
                 await self.cooldown_repo.delete_cooldown(wallet_address, token_mint)
-                return False
+                return False, True  # cleared=True → TradeGuard must not re-block
 
     def _passes_hard_filters(self, token_mint: str, token_info: dict) -> bool:
         age_minutes = token_info.get("age_minutes", 0.0)

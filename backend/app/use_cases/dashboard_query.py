@@ -92,7 +92,7 @@ class DashboardQueryService:
         3-second timeout, returns empty list on failure (non-blocking for dashboard).
         """
         try:
-            trades = await self.trade_history_repo.get_closed_trades(limit=limit, offset=0)
+            trades = await self.trade_history_repo.get_closed_trades(limit=limit, offset=0, exclude_bootstrap=True)
             return trades
         except Exception as e:
             logger.error(f"[DASHBOARD QUERY] Error fetching recent trades: {e}")
@@ -124,7 +124,7 @@ class DashboardQueryService:
             "active_model_version": active_model_ver,
         }
         try:
-            trades = await self.trade_history_repo.get_closed_trades(limit=500, offset=0)
+            trades = await self.trade_history_repo.get_closed_trades(limit=500, offset=0, exclude_bootstrap=True)
             stats["total_closed_trades"] = len(trades)
 
             buy_benar = [t for t in trades if t.label == "BUY_BENAR"]
@@ -140,8 +140,18 @@ class DashboardQueryService:
             recent_signals = await self.get_recent_signals(hours=24)
             stats["total_signals_24h"] = len(recent_signals)
             stats["alerts_fired_24h"] = len([s for s in recent_signals if s.get("event") == "ALERT"])
+            
+            # Count triggers_today: signals generated today (midnight UTC to now)
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            stats["triggers_today"] = len([
+                s for s in recent_signals
+                if datetime.fromisoformat(
+                    s.get("timestamp", "2000-01-01T00:00:00+00:00").replace("Z", "+00:00")
+                ) >= today_start
+            ])
         except Exception as e:
             logger.warning(f"[DASHBOARD QUERY] Signal stats error: {e}")
+
 
         try:
             if self.position_repo:
@@ -198,18 +208,20 @@ class DashboardQueryService:
     async def get_wallet_candidates(self) -> List[dict]:
         """
         Return wallet candidates awaiting approval (F-12).
-        Queries watchlist_wallets table for source='auto_discovered'.
+        Queries watchlist_wallets table for source='auto_discovered' and status='pending'.
         """
         try:
             all_wallets = await self.wallet_repo.get_all_wallets()
             candidates = []
             for w in all_wallets:
-                if w.source == "auto_discovered":
+                # Only return candidates that are pending approval
+                is_pending = w.status is None or w.status == "pending"
+                if w.source == "auto_discovered" and is_pending:
                     candidates.append({
                         "wallet_address": w.wallet_address,
                         "label": w.label,
                         "source": w.source,
-                        "discovery_reason": f"Smart Money correlation (Status: {w.status})",
+                        "discovery_reason": f"Smart Money correlation (Status: {w.status or 'pending'})",
                         "discovered_at": w.added_at,
                         "status": w.status or "pending"
                     })

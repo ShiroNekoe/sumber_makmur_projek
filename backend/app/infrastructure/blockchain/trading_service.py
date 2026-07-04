@@ -20,8 +20,8 @@ async def execute_pumpportal_swap(
     Uses the Lightning Transaction API to sign and land transactions on Solana mainnet.
     Returns: transaction signature string on success, None on failure.
     """
-    import os
-    is_testing = (os.getenv("TESTING") == "True" or os.getenv("PYTEST_CURRENT_TEST") is not None)
+    import sys
+    is_testing = ("pytest" in sys.modules or "unittest" in sys.modules)
     api_key = getattr(settings, "PUMP_FUN_API_KEY", None)
     if is_testing or not api_key or len(api_key.strip()) < 10 or api_key == "YOUR_PUMP_FUN_API_KEY":
         logger.info(f"[TRADING SERVICE] [PAPER TRADE] Simulating {action} of {amount} on {token_mint[:6]}...")

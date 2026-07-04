@@ -35,7 +35,12 @@ class TestRpcFallbackAndDegradedMode(unittest.IsolatedAsyncioTestCase):
         monitor = SolanaWebSocketMonitor()
         monitor.rpc_state = "secondary"
 
-        # Failover from secondary triggers degraded mode
+        # Failover from secondary triggers fallback
+        await monitor._handle_failover()
+        self.assertEqual(monitor.rpc_state, "fallback")
+        self.assertFalse(SolanaWebSocketMonitor.degraded_mode)
+
+        # Failover from fallback triggers degraded mode
         await monitor._handle_failover()
         self.assertEqual(monitor.rpc_state, "degraded")
         self.assertTrue(SolanaWebSocketMonitor.degraded_mode)

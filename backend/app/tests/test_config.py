@@ -11,6 +11,15 @@ from app.websocket.manager import manager as ws_manager
 
 class TestConfigManagement(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        self.env_patches = {
+            "RPC_PRIMARY_URL": "https://api.mainnet-beta.solana.com",
+            "SOLANA_RPC_URL": "https://api.mainnet-beta.solana.com",
+            "RPC_SECONDARY_URL": "https://api.devnet.solana.com",
+            "SOLANA_RPC_FALLBACK_URL": "https://api.devnet.solana.com"
+        }
+        self.env_patcher = patch.dict(os.environ, self.env_patches)
+        self.env_patcher.start()
+        
         self.valid_config = {
             "trigger_engine": {
                 "window_minutes": 5,
@@ -68,6 +77,7 @@ class TestConfigManagement(unittest.IsolatedAsyncioTestCase):
         ws_manager.broadcast = AsyncMock()
 
     def tearDown(self):
+        self.env_patcher.stop()
         ws_manager.broadcast = self.original_broadcast
 
     def test_valid_config_loading(self):
@@ -170,6 +180,10 @@ class TestConfigManagement(unittest.IsolatedAsyncioTestCase):
             # Let the loop detect the modification
             await asyncio.sleep(2.5)
             task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
             
             # Non-critical setting updated successfully
             self.assertEqual(self.settings.TRIGGER_WINDOW_MINUTES, 15)
@@ -207,6 +221,10 @@ class TestConfigManagement(unittest.IsolatedAsyncioTestCase):
             # Let the loop detect the modification and fail
             await asyncio.sleep(2.5)
             task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
             
             # Config remains the original valid value (5)
             self.assertEqual(self.settings.TRIGGER_WINDOW_MINUTES, 5)

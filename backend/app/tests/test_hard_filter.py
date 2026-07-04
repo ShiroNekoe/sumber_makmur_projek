@@ -61,9 +61,9 @@ class TestTokenAgeLiquidityHardFilter(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(log.reason)
 
     async def test_token_fails_age(self):
-        # Setup: Token is 30m old (fails age check)
+        # Setup: Token is 15m old (fails new 30m age threshold)
         self.token_info_service.get_token_info.return_value = {
-            "age_minutes": 30.0,
+            "age_minutes": 15.0,
             "liquidity_usd": 15000.0,
             "volume_24h": 3000.0,
             "token_symbol": "FAIL_AGE"
@@ -90,10 +90,10 @@ class TestTokenAgeLiquidityHardFilter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("age_too_low", log.reason)
 
     async def test_token_fails_liquidity(self):
-        # Setup: Token has $3k liquidity (fails liquidity check)
+        # Setup: Token has $1500 liquidity (fails new 3000 USD threshold)
         self.token_info_service.get_token_info.return_value = {
             "age_minutes": 120.0,
-            "liquidity_usd": 3000.0,
+            "liquidity_usd": 1500.0,
             "volume_24h": 3000.0,
             "token_symbol": "FAIL_LIQ"
         }

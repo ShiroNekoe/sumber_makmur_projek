@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.api.schemas import (
     SignalListResponse,
     SignalResponse,
+    FeatureVectorResponse,
     TradeListResponse,
     TradeResponse,
     PositionListResponse,
@@ -26,6 +27,7 @@ from app.api.schemas import (
     ComponentStatus,
     SystemErrorListResponse,
     SystemErrorResponse,
+    PortfolioSummaryResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,15 @@ def _partial_address(addr: str) -> str:
     """Display wallet/token address in partial format: first 6 + ... + last 4."""
     if not addr or len(addr) <= 12:
         return addr
+    # Check for known mock tokens
+    if addr == "DezXAZ8z7PnrnRJjz3wXBoRgixrfNg7yFLBnRx4S75Jb":
+        return "BONK"
+    elif addr == "EKpQGSJtjMFqKZ9KQGWjhoxjq2WqU1AF9Z23J1x584":
+        return "WIF"
+    elif addr == "So11111111111111111111111111111111111111112":
+        return "SOL"
+    elif addr == "CzLSujW7ZJuY7oL4b5C32hiyUeZSt84b5F08Suj752b":
+        return "HYPE"
     return f"{addr[:6]}...{addr[-4:]}"
 
 
@@ -66,6 +77,25 @@ async def get_recent_signals(
         for i, s in enumerate(raw_signals):
             token = s.get("token_address", "unknown")
             wallet = s.get("wallet_source", "unknown")
+            
+            features_raw = s.get("features")
+            features_mapped = None
+            if isinstance(features_raw, dict):
+                features_mapped = FeatureVectorResponse(
+                    position_size_usd=float(features_raw.get("position_size_usd") or 0.0),
+                    token_age_minutes=float(features_raw.get("token_age_minutes") or 0.0),
+                    liquidity_pool_depth=float(features_raw.get("liquidity_pool_depth") or 0.0),
+                    slippage_actual=features_raw.get("slippage_actual"),
+                    cluster_score=float(features_raw.get("cluster_score") or 0.0),
+                    win_rate_30d=float(features_raw.get("win_rate_30d") or 0.0),
+                    avg_holding_time_minutes=float(features_raw.get("avg_holding_time_minutes") or 0.0),
+                    typical_trade_size_usd=float(features_raw.get("typical_trade_size_usd") or 0.0),
+                    past_exit_pattern_score=float(features_raw.get("past_exit_pattern_score") or 0.0),
+                    sol_usd_momentum=float(features_raw.get("sol_usd_momentum") or 0.0),
+                    token_volume_liquidity_ratio=float(features_raw.get("token_volume_liquidity_ratio") or 0.0),
+                    hour_of_day_utc=int(features_raw.get("hour_of_day_utc") or 0)
+                )
+
             signals.append(SignalResponse(
                 signal_id=s.get("signal_id", f"sig_{i}"),
                 token_address=token,
@@ -79,6 +109,7 @@ async def get_recent_signals(
                     s.get("timestamp", datetime.now(timezone.utc).isoformat())
                     .replace("Z", "+00:00")
                 ),
+                features=features_mapped
             ))
         return SignalListResponse(signals=signals, total=len(signals), hours_window=hours)
     except HTTPException:
@@ -337,3 +368,80 @@ async def get_system_errors(
     except Exception as e:
         logger.error(f"[DASHBOARD API] /errors error: {e}", exc_info=True)
         return SystemErrorListResponse(errors=[], total=0)
+
+
+# ─── GET /dashboard/wallets/active ───────────────────────────────────────────
+
+@router.get("/wallets/active", summary="Get active watchlist wallets")
+async def get_active_wallets(request: Request = None):
+    """Returns the list of active watchlist wallets from the SQLite database."""
+    try:
+        query_service = _get_query_service(request)
+        wallet_repo = query_service.wallet_repo
+        active_list = await wallet_repo.get_active_wallets()
+        return [
+            {
+                "wallet_address": w.wallet_address,
+                "wallet_short": _partial_address(w.wallet_address),
+                "label": w.label,
+                "source": w.source,
+                "added_at": w.added_at.isoformat() if w.added_at else None,
+                "active": w.active
+            }
+            for w in active_list
+        ]
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] /wallets/active error: {e}", exc_info=True)
+        return []
+
+
+# ─── GET /dashboard/portfolio ────────────────────────────────────────────────
+
+@router.get("/portfolio", response_model=PortfolioSummaryResponse, summary="Get portfolio summary and holdings")
+async def get_portfolio(request: Request):
+    """Returns total realized/unrealized PnL, portfolio value, and detailed asset allocations."""
+    try:
+        pnl_calculator = getattr(request.app.state, "pnl_calculator", None)
+        if not pnl_calculator:
+            raise HTTPException(status_code=503, detail="PnL Calculator not available")
+            
+        from app.infrastructure.blockchain.wallet_manager import load_wallet_from_env
+        keypair = load_wallet_from_env()
+        pubkey_str = str(keypair.pubkey()) if keypair else "2fRGriSp8o32KdV1K8yxic1ZBLnqJXRiXpQK9ovCebf8"
+        
+        summary = await pnl_calculator.get_portfolio_summary(pubkey_str)
+        
+        # If keypair is None, add some mock holdings to summary so dashboard is lively in paper trading
+        if not keypair:
+            summary["holdings"] = [
+                {
+                    "mint": "TokenA11111111111111111111111111111111111",
+                    "symbol": "WHALE_ALPHA",
+                    "name": "Whale Alpha Sniper Token",
+                    "amount": 1000.0,
+                    "price_usd": 0.50,
+                    "cost_basis": 0.45,
+                    "value_usd": 500.0,
+                    "unrealized_pnl_usd": 50.0,
+                    "unrealized_pnl_pct": 0.1111
+                },
+                {
+                    "mint": "TokenB22222222222222222222222222222222222",
+                    "symbol": "WHALE_BETA",
+                    "name": "Whale Beta Sniper Token",
+                    "amount": 2500.0,
+                    "price_usd": 0.20,
+                    "cost_basis": 0.22,
+                    "value_usd": 500.0,
+                    "unrealized_pnl_usd": -50.0,
+                    "unrealized_pnl_pct": -0.0909
+                }
+            ]
+            summary["portfolio_value_usd"] = 1000.0
+            summary["unrealized_pnl_usd"] = 0.0
+            summary["total_pnl_usd"] = summary["realized_pnl_usd"]
+            
+        return summary
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] /portfolio error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

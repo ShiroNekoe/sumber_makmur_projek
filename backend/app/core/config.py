@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
+load_dotenv("backend/.env")
 import yaml
 import logging
 import asyncio
@@ -15,18 +18,21 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:5173"]
     
     # RPC and indexing endpoints
-    SOLANA_RPC_URL: str = "https://api.mainnet-beta.solana.com"
-    SOLANA_RPC_FALLBACK_URL: str = "https://api.mainnet-beta.solana.com"
+    SOLANA_RPC_URL: str = "https://convincing-orbital-gas.solana-mainnet.quiknode.pro/21ba38b9733739c54695b200c406dfa2e03ca0de"
+    SOLANA_RPC_FALLBACK_URL: str = "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"
     
-    RPC_PRIMARY_URL: str = "https://api.mainnet-beta.solana.com"
-    RPC_SECONDARY_URL: str = "https://api.devnet.solana.com"
+    RPC_PRIMARY_URL: str = "https://convincing-orbital-gas.solana-mainnet.quiknode.pro/21ba38b9733739c54695b200c406dfa2e03ca0de"
+    RPC_SECONDARY_URL: str = "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"
     RPC_MAX_RETRY: int = 5
     
-    # Target whale wallets to track (Whale Wallet A & B)
+    # Target whale wallets to track (Active on-chain Solana wallets)
     TARGET_WALLETS: List[str] = [
-        "Wha1eA11111111111111111111111111111111111",
-        "Wha1eB22222222222222222222222222222222222"
+        "JD6rVaerbyz6wjQ433nrw6bFTgFrp46MiYmi8EtUAfsG",
+        "Fw6Tgm8uCKb35GPwsjhKv6LTFq3m6L1U35hHPYR8Ai3C",
+        "4jjEXcFPXw7WVGXSTb227HW6wfLprjh2RtiHty4GbetE",
+        "5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9"
     ]
+
     
     # SQLite Database Configuration
     DATABASE_URL: str = "sqlite:///sumber_makmur.db"
@@ -63,9 +69,9 @@ class Settings(BaseSettings):
     RETRAIN_ROLLBACK_ACCURACY_DROP_PCT: float = 0.05
 
     # Model v0 Bootstrap Settings
-    BOOTSTRAP_HISTORY_DAYS: int = 30
-    BOOTSTRAP_MIN_TRADES_WARNING: int = 50
-    BOOTSTRAP_MAX_SIGNATURES_PER_WALLET: int = 500
+    BOOTSTRAP_HISTORY_DAYS: int = 7
+    BOOTSTRAP_MIN_TRADES_WARNING: int = 10
+    BOOTSTRAP_MAX_SIGNATURES_PER_WALLET: int = 60
     BOOTSTRAP_API_TIMEOUT_SECONDS: float = 8.0
     
     KILL_SWITCH_DEV_WALLET_SELL_THRESHOLD_PCT: float = 0.05
@@ -260,8 +266,19 @@ class Settings(BaseSettings):
         # RPC Parameters Validation (Restart Needed Warn for Hot-Reload)
         rp = config_data.get("rpc", {})
         if not hot_reload:
-            self.RPC_PRIMARY_URL = rp.get("primary_url", self.RPC_PRIMARY_URL)
-            self.RPC_SECONDARY_URL = rp.get("secondary_url", self.RPC_SECONDARY_URL)
+            # Prioritize environment variables from .env if they are customized
+            env_primary = os.getenv("RPC_PRIMARY_URL") or os.getenv("SOLANA_RPC_URL")
+            if env_primary and env_primary != "https://api.mainnet-beta.solana.com":
+                self.RPC_PRIMARY_URL = env_primary
+            else:
+                self.RPC_PRIMARY_URL = rp.get("primary_url", self.RPC_PRIMARY_URL)
+
+            env_secondary = os.getenv("RPC_SECONDARY_URL") or os.getenv("SOLANA_RPC_FALLBACK_URL")
+            if env_secondary and env_secondary != "https://api.devnet.solana.com" and env_secondary != "https://api.mainnet-beta.solana.com":
+                self.RPC_SECONDARY_URL = env_secondary
+            else:
+                self.RPC_SECONDARY_URL = rp.get("secondary_url", self.RPC_SECONDARY_URL)
+
             self.RPC_MAX_RETRY = rp.get("max_retry", self.RPC_MAX_RETRY)
             self.SOLANA_RPC_URL = self.RPC_PRIMARY_URL
             self.SOLANA_RPC_FALLBACK_URL = self.RPC_SECONDARY_URL

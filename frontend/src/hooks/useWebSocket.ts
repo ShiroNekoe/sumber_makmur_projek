@@ -19,6 +19,7 @@ export const useWebSocket = (url: string = 'ws://localhost:8000/ws') => {
     addWalletCandidate,
     approveWalletCandidate,
     addNotification,
+    setPortfolio,
   } = useStore()
 
   const connect = () => {
@@ -102,14 +103,30 @@ export const useWebSocket = (url: string = 'ws://localhost:8000/ws') => {
               const isAlert = raw.event === 'ALERT'
               const confidenceVal = raw.confidence_score ? Math.round(raw.confidence_score * 100) : 0
               
+              let displayToken = 'Unknown';
+              if (raw.token_address) {
+                if (raw.token_address === 'DezXAZ8z7PnrnRJjz3wXBoRgixrfNg7yFLBnRx4S75Jb') {
+                  displayToken = 'BONK';
+                } else if (raw.token_address === 'EKpQGSJtjMFqKZ9KQGWjhoxjq2WqU1AF9Z23J1x584') {
+                  displayToken = 'WIF';
+                } else if (raw.token_address === 'So11111111111111111111111111111111111111112') {
+                  displayToken = 'SOL';
+                } else if (raw.token_address === 'CzLSujW7ZJuY7oL4b5C32hiyUeZSt84b5F08Suj752b') {
+                  displayToken = 'HYPE';
+                } else {
+                  displayToken = `${raw.token_address.substring(0, 6)}...${raw.token_address.slice(-4)}`;
+                }
+              }
+              
               const mappedSignal = {
                 id: raw.signal_id || raw.signature || `sig_${Date.now()}`,
                 direction: raw.direction || 'HOLD',
-                token: raw.token_address ? `${raw.token_address.substring(0, 6)}...${raw.token_address.slice(-4)}` : 'Unknown',
+                token: displayToken,
                 confidence: confidenceVal,
                 timestamp: raw.timestamp ? new Date(raw.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString(),
                 details: `Source Whale: ${raw.wallet_source ? raw.wallet_source.substring(0, 6) + '...' + raw.wallet_source.slice(-4) : 'N/A'}`,
-                safetyPassed: raw.safety_passed || false
+                safetyPassed: raw.safety_passed || false,
+                features: raw.features || null
               }
               
               addSignal(mappedSignal)
@@ -190,6 +207,10 @@ export const useWebSocket = (url: string = 'ws://localhost:8000/ws') => {
             case 'position_cap_reached': {
               const raw = payload
               addNotification(`ℹ️ POSITION CAP: Correlation cap reached (${raw.open_count}/${raw.max_count}). Trade blocked.`, 'info')
+              break
+            }
+            case 'portfolio_update': {
+              setPortfolio(payload)
               break
             }
             case 'ping_ack': {

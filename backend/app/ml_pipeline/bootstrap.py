@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -46,6 +47,7 @@ class HistoricalSwapEvent:
     direction: str  # BUY | SELL
     amount_token: float
     timestamp: datetime
+    amount_usd: float = 0.0
 
 
 @dataclass
@@ -86,17 +88,44 @@ class SolanaRpcHistoricalTransactionSource:
         self.rpc_url = rpc_url or settings.SOLANA_RPC_URL
         self.timeout_seconds = timeout_seconds or settings.BOOTSTRAP_API_TIMEOUT_SECONDS
         self.max_signatures_per_wallet = max_signatures_per_wallet or settings.BOOTSTRAP_MAX_SIGNATURES_PER_WALLET
+        self.sol_price_history = []
+        self._fetch_sol_price_history()
+
+    def _fetch_sol_price_history(self):
+        import urllib.request
+        import json
+        try:
+            url = "https://api.coingecko.com/api/v3/coins/solana/market_chart?vs_currency=usd&days=30"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode("utf-8"))
+                self.sol_price_history = data.get("prices", [])
+                logger.info(f"[MODEL BOOTSTRAP] Loaded {len(self.sol_price_history)} historical SOL price points from CoinGecko")
+        except Exception as e:
+            logger.warning(f"[MODEL BOOTSTRAP] Could not fetch SOL price history from CoinGecko: {e}. Using fallback $145.0")
+
+    def get_historical_sol_price(self, dt: datetime) -> float:
+        if not self.sol_price_history:
+            return 145.0
+        ts_ms = int(dt.timestamp() * 1000)
+        try:
+            closest = min(self.sol_price_history, key=lambda x: abs(x[0] - ts_ms))
+            return float(closest[1])
+        except Exception:
+            return 145.0
 
     async def fetch_wallet_events(self, wallet_address: str, history_days: int) -> List[HistoricalSwapEvent]:
         cutoff = datetime.now(timezone.utc) - timedelta(days=history_days)
         signatures = await self._fetch_signatures(wallet_address, cutoff)
+        
+        # Batch fetch transactions
+        txs = await self._fetch_transactions_batch(signatures)
+        
         events: List[HistoricalSwapEvent] = []
-
-        for signature in signatures:
+        for signature, tx in zip(signatures, txs):
+            if not tx:
+                continue
             try:
-                tx = await self._fetch_transaction(signature)
-                if not tx:
-                    continue
                 events.extend(self._parse_transaction(wallet_address, signature, tx))
             except Exception as exc:
                 logger.warning(
@@ -105,9 +134,71 @@ class SolanaRpcHistoricalTransactionSource:
                     wallet_address,
                     exc,
                 )
-
+        
         events.sort(key=lambda e: e.timestamp)
         return events
+
+    async def _fetch_transactions_batch(self, signatures: List[str]) -> List[Optional[dict]]:
+        import asyncio
+        if not signatures:
+            return []
+
+        def sync_fetch_batch(batch_sigs: List[str]) -> List[Optional[dict]]:
+            payload = [
+                {
+                    "jsonrpc": "2.0",
+                    "id": idx,
+                    "method": "getTransaction",
+                    "params": [
+                        sig,
+                        {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0},
+                    ],
+                }
+                for idx, sig in enumerate(batch_sigs)
+            ]
+            response = self._post_json(payload)
+            results = [None] * len(batch_sigs)
+            if isinstance(response, list):
+                for item in response:
+                    idx = item.get("id")
+                    res = item.get("result")
+                    if isinstance(idx, int) and 0 <= idx < len(batch_sigs):
+                        results[idx] = res if isinstance(res, dict) else None
+            elif isinstance(response, dict) and "result" in response:
+                results[0] = response["result"]
+            return results
+
+        # Split signatures into batches of 5 (much safer than 20)
+        batch_size = 5
+        batches = [signatures[i:i + batch_size] for i in range(0, len(signatures), batch_size)]
+        all_results = []
+        
+        for batch in batches:
+            try:
+                # Helius free/dev tier explicitly forbids JSON-RPC batching (returns 403 Forbidden).
+                # We skip batching and raise an exception to fall back to individual fetches immediately.
+                if "helius" in self.rpc_url.lower():
+                    raise ValueError("Helius free tier does not support JSON-RPC batching.")
+                res = await asyncio.to_thread(sync_fetch_batch, batch)
+                all_results.extend(res)
+                await asyncio.sleep(0.15)
+            except Exception as e:
+                logger.debug(f"[MODEL BOOTSTRAP] Batch of {len(batch)} failed: {e}. Falling back to individual fetches...")
+                # Fallback: fetch one-by-one for this failed batch
+                is_helius = "helius" in self.rpc_url.lower()
+                for sig in batch:
+                    try:
+                        tx = await self._fetch_transaction(sig)
+                        all_results.append(tx)
+                        # Sleep longer for Helius to respect the 10 reqs/sec free limit and avoid 429s
+                        await asyncio.sleep(0.35 if is_helius else 0.1)
+                    except Exception as fallback_err:
+                        logger.debug(f"[MODEL BOOTSTRAP] Individual fallback fetch failed for {sig[:12]}...: {fallback_err}")
+                        all_results.append(None)
+                
+        return all_results
+
+
 
     async def _fetch_signatures(self, wallet_address: str, cutoff: datetime) -> List[str]:
         import asyncio
@@ -167,15 +258,86 @@ class SolanaRpcHistoricalTransactionSource:
             logger.warning("[MODEL BOOTSTRAP] Failed fetching transaction %s: %s", signature, exc)
             return None
 
-    def _post_json(self, payload: dict) -> dict:
-        req = urllib.request.Request(
-            self.rpc_url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
+    def _post_json(self, payload: any) -> any:
+        import socket
+        import time
+        import urllib.error
+
+        retries = 5
+        backoff = 2.0
+        # Retryable error codes: 408=timeout, 429=rate limit, 502/503/504=server errors
+        RETRYABLE_CODES = {408, 429, 502, 503, 504}
+        # RPC fallback chain: primary -> secondary -> public fallback
+        rpc_fallback_chain = [
+            settings.RPC_PRIMARY_URL,
+            settings.RPC_SECONDARY_URL,
+            "https://api.mainnet-beta.solana.com",
+        ]
+        # Start from current configured URL
+        current_rpc_idx = 0
+        if self.rpc_url in rpc_fallback_chain:
+            current_rpc_idx = rpc_fallback_chain.index(self.rpc_url)
+        active_url = self.rpc_url
+
+        for attempt in range(retries):
+            try:
+                req = urllib.request.Request(
+                    active_url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
+                    body = response.read().decode("utf-8")
+                    return json.loads(body)
+            except (urllib.error.HTTPError, json.JSONDecodeError, ValueError) as err:
+                # Catch JSONDecodeError (ValueError) to handle truncated payloads as retryable
+                is_http_err = isinstance(err, urllib.error.HTTPError)
+                if (not is_http_err or err.code in RETRYABLE_CODES) and attempt < retries - 1:
+                    error_label = f"HTTP {err.code}" if is_http_err else "JSONDecodeError (truncated payload)"
+                    logger.warning(
+                        "[MODEL BOOTSTRAP] RPC %s on %s. Retrying in %.1fs (attempt %d/%d)...",
+                        error_label,
+                        active_url,
+                        backoff,
+                        attempt + 1,
+                        retries,
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    if attempt >= 1 and current_rpc_idx + 1 < len(rpc_fallback_chain):
+                        current_rpc_idx += 1
+                        active_url = rpc_fallback_chain[current_rpc_idx]
+                        logger.warning(
+                            "[MODEL BOOTSTRAP] Switching bootstrap RPC to fallback: %s",
+                            active_url,
+                        )
+                else:
+                    raise
+            except (socket.timeout, TimeoutError) as err:
+                if attempt < retries - 1:
+                    logger.warning(
+                        "[MODEL BOOTSTRAP] Socket timeout on %s. Retrying in %.1fs (attempt %d/%d)...",
+                        active_url,
+                        backoff,
+                        attempt + 1,
+                        retries,
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2.0
+                    if attempt >= 1 and current_rpc_idx + 1 < len(rpc_fallback_chain):
+                        current_rpc_idx += 1
+                        active_url = rpc_fallback_chain[current_rpc_idx]
+                        logger.warning(
+                            "[MODEL BOOTSTRAP] Switching bootstrap RPC to fallback: %s",
+                            active_url,
+                        )
+
+                else:
+                    raise
+            except Exception:
+                raise
+
 
     def _parse_transaction(self, wallet_address: str, signature: str, tx: dict) -> List[HistoricalSwapEvent]:
         block_time = tx.get("blockTime")
@@ -188,13 +350,64 @@ class SolanaRpcHistoricalTransactionSource:
         pre_balances = meta.get("preTokenBalances") or []
         post_balances = meta.get("postTokenBalances") or []
 
-        before = self._balances_by_mint(pre_balances, wallet_address)
-        after = self._balances_by_mint(post_balances, wallet_address)
+        before = self._balances_by_mint(pre_balances, wallet_address, tx)
+        after = self._balances_by_mint(post_balances, wallet_address, tx)
+        
+        # Calculate SOL native changes
+        transaction = tx.get("transaction") or {}
+        message = transaction.get("message") or {}
+        account_keys_raw = message.get("accountKeys") or []
+        account_keys = []
+        for k in account_keys_raw:
+            if isinstance(k, dict):
+                pubkey = k.get("pubkey")
+                if pubkey:
+                    account_keys.append(pubkey)
+            elif isinstance(k, str):
+                account_keys.append(k)
+
+        pre_bals = meta.get("preBalances") or []
+        post_bals = meta.get("postBalances") or []
+        sol_change = 0.0
+        try:
+            wallet_idx = account_keys.index(wallet_address)
+            if wallet_idx < len(pre_bals) and wallet_idx < len(post_bals):
+                sol_change = (post_bals[wallet_idx] - pre_bals[wallet_idx]) / 1e9
+        except ValueError:
+            pass
+
+        # WSOL change
+        wsol_before = before.get(self.WRAPPED_SOL_MINT, 0.0)
+        wsol_after = after.get(self.WRAPPED_SOL_MINT, 0.0)
+        wsol_change = wsol_after - wsol_before
+
+        # USDC change
+        usdc_before = before.get("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 0.0)
+        usdc_after = after.get("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 0.0)
+        usdc_change = usdc_after - usdc_before
+
+        # USDT change
+        usdt_before = before.get("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", 0.0)
+        usdt_after = after.get("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", 0.0)
+        usdt_change = usdt_after - usdt_before
+
+        # Total SOL change (native + wrapped)
+        net_sol_change = sol_change + wsol_change
+        
+        # Estimate transaction USD value
+        sol_price = self.get_historical_sol_price(timestamp)
+        amount_usd = 0.0
+        
+        if abs(usdc_change) > 0.01 or abs(usdt_change) > 0.01:
+            amount_usd = abs(usdc_change) + abs(usdt_change)
+        elif abs(net_sol_change) > 0.001:
+            amount_usd = abs(net_sol_change) * sol_price
+            
         mints = set(before) | set(after)
         events: List[HistoricalSwapEvent] = []
 
         for mint in mints:
-            if mint == self.WRAPPED_SOL_MINT:
+            if mint in [self.WRAPPED_SOL_MINT, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"]:
                 continue
             delta = after.get(mint, 0.0) - before.get(mint, 0.0)
             if abs(delta) <= 1e-12:
@@ -207,15 +420,41 @@ class SolanaRpcHistoricalTransactionSource:
                     direction="BUY" if delta > 0 else "SELL",
                     amount_token=abs(delta),
                     timestamp=timestamp,
+                    amount_usd=amount_usd,
                 )
             )
 
         return events
 
-    def _balances_by_mint(self, balances: list, wallet_address: str) -> Dict[str, float]:
+    def _balances_by_mint(self, balances: list, wallet_address: str, tx: Optional[dict] = None) -> Dict[str, float]:
         by_mint: Dict[str, float] = {}
+        
+        # Extract accountKeys as list of strings if tx is provided
+        account_keys = []
+        if tx:
+            transaction = tx.get("transaction") or {}
+            message = transaction.get("message") or {}
+            account_keys_raw = message.get("accountKeys") or []
+            for k in account_keys_raw:
+                if isinstance(k, dict):
+                    pubkey = k.get("pubkey")
+                    if pubkey:
+                        account_keys.append(pubkey)
+                elif isinstance(k, str):
+                    account_keys.append(k)
+
         for row in balances:
             owner = row.get("owner")
+            if not owner and tx:
+                acc_idx = row.get("accountIndex")
+                if acc_idx is not None:
+                    try:
+                        idx = int(acc_idx)
+                        if 0 <= idx < len(account_keys):
+                            owner = account_keys[idx]
+                    except (ValueError, IndexError):
+                        pass
+
             if owner and owner != wallet_address:
                 continue
             mint = row.get("mint")
@@ -229,6 +468,7 @@ class SolanaRpcHistoricalTransactionSource:
                 ui_amount = float(amount_raw or 0.0) / (10 ** decimals)
             by_mint[mint] = by_mint.get(mint, 0.0) + float(ui_amount or 0.0)
         return by_mint
+
 
 
 class DexScreenerHistoricalPriceProvider:
@@ -284,19 +524,40 @@ class DexScreenerHistoricalPriceProvider:
 
         try:
             snapshot = await asyncio.to_thread(sync_fetch)
-            if snapshot:
-                logger.warning(
-                    "[MODEL BOOTSTRAP] DexScreener public payload used as best-effort snapshot "
-                    "for %s at %s; exact historical OHLC is unavailable from this free endpoint.",
-                    token_mint,
-                    timestamp.isoformat(),
-                )
+            if snapshot is None:
+                raise ValueError("DexScreener returned empty pairs")
+            logger.warning(
+                "[MODEL BOOTSTRAP] DexScreener public payload used as best-effort snapshot "
+                "for %s at %s; exact historical OHLC is unavailable from this free endpoint.",
+                token_mint,
+                timestamp.isoformat(),
+            )
             self.cache[token_mint] = snapshot
             return snapshot
         except Exception as exc:
-            logger.warning("[MODEL BOOTSTRAP] DexScreener snapshot unavailable for %s: %s", token_mint, exc)
-            self.cache[token_mint] = None
-            return None
+            if os.getenv("SIMULATION_MODE") == "True":
+                logger.warning(
+                    "[MODEL BOOTSTRAP] DexScreener snapshot unavailable for %s: %s. Using deterministic fallback (SIMULATION_MODE).",
+                    token_mint,
+                    exc,
+                )
+                import hashlib
+                h_input = f"{token_mint}_{timestamp.isoformat()}"
+                h_val = int(hashlib.md5(h_input.encode("utf-8")).hexdigest(), 16)
+                price_usd = 0.90 + (h_val % 26) * 0.01
+                
+                snapshot = TokenMarketSnapshot(
+                    price_usd=price_usd,
+                    liquidity_usd=15000.0,
+                    volume_24h=3000.0,
+                    pair_created_at=datetime.now(timezone.utc) - timedelta(days=2),
+                )
+                self.cache[token_mint] = snapshot
+                return snapshot
+            else:
+                logger.warning("[MODEL BOOTSTRAP] DexScreener snapshot unavailable for %s: %s", token_mint, exc)
+                self.cache[token_mint] = None
+                return None
 
 
 class HistoricalModelBootstrapService(IModelBootstrapService):
@@ -373,11 +634,50 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
             try:
                 wallet_events = await self.transaction_source.fetch_wallet_events(wallet, self.history_days)
                 events.extend(wallet_events)
-            except BootstrapDataUnavailable as exc:
+            except Exception as exc:
                 failures.append(str(exc))
 
-        if failures and not events:
-            raise BootstrapDataUnavailable("; ".join(failures))
+        if (failures and not events) or not events:
+            if os.getenv("SIMULATION_MODE") == "True":
+                logger.warning("[MODEL BOOTSTRAP] No historical events found from RPC. Generating synthetic swap dataset to bootstrap Model v0 (SIMULATION_MODE).")
+                import random
+                from datetime import timedelta
+                
+                mock_tokens = [
+                    "DezXAZ8z7PnrnRJjz3wXBoRgixrfNg7yFLBnRx4S75Jb", # BONK
+                    "EKpQGSJtjMFqKZ9KQGWjhoxjq2WqU1AF9Z23J1x584",  # WIF
+                    "CzLSujW7ZJuY7oL4b5C32hiyUeZSt84b5F08Suj752b",
+                    "9xQ1UvX4K9W1f3VjK3pQGWjhoxjq2WqU1AF9Z23J1x584",
+                    "FX9mK3W1f3VjK3pQGWjhoxjq2WqU1AF9Z23J1x584hK"
+                ]
+                now = datetime.now(timezone.utc)
+                for wallet in settings.TARGET_WALLETS:
+                    for idx in range(30): # 30 round-trip trades = 60 events
+                        token = random.choice(mock_tokens)
+                        trade_time = now - timedelta(days=random.randint(1, 29))
+                        exit_time = trade_time + timedelta(minutes=random.randint(5, 60))
+                        amount = float(random.randint(100, 2000))
+                        
+                        # Buy event
+                        events.append(HistoricalSwapEvent(
+                            wallet_address=wallet,
+                            signature=f"mock_sig_buy_{wallet[:4]}_{idx}_{int(trade_time.timestamp())}",
+                            token_mint=token,
+                            direction="BUY",
+                            amount_token=amount,
+                            timestamp=trade_time
+                        ))
+                        # Sell event
+                        events.append(HistoricalSwapEvent(
+                            wallet_address=wallet,
+                            signature=f"mock_sig_sell_{wallet[:4]}_{idx}_{int(exit_time.timestamp())}",
+                            token_mint=token,
+                            direction="SELL",
+                            amount_token=amount,
+                            timestamp=exit_time
+                        ))
+            else:
+                raise BootstrapDataUnavailable("; ".join(failures) if failures else "No historical events found from RPC.")
 
         if failures:
             logger.warning("[MODEL BOOTSTRAP] Some wallets could not be fetched: %s", "; ".join(failures))
@@ -426,15 +726,43 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
         exit_event: HistoricalSwapEvent,
         amount_token: float,
     ) -> Optional[ReconstructedPosition]:
-        entry_snapshot = await self.price_provider.get_snapshot(entry.token_mint, entry.timestamp)
-        exit_snapshot = await self.price_provider.get_snapshot(exit_event.token_mint, exit_event.timestamp)
-        if not entry_snapshot or not exit_snapshot:
+        entry_price = 0.0
+        exit_price = 0.0
+        
+        if getattr(entry, "amount_usd", 0.0) > 0.0:
+            entry_price = entry.amount_usd / entry.amount_token if entry.amount_token > 0 else 0.0
+        else:
+            entry_snap = await self.price_provider.get_snapshot(entry.token_mint, entry.timestamp)
+            if entry_snap:
+                entry_price = entry_snap.price_usd
+                
+        if getattr(exit_event, "amount_usd", 0.0) > 0.0:
+            exit_price = exit_event.amount_usd / exit_event.amount_token if exit_event.amount_token > 0 else 0.0
+        else:
+            exit_snap = await self.price_provider.get_snapshot(exit_event.token_mint, exit_event.timestamp)
+            if exit_snap:
+                exit_price = exit_snap.price_usd
+
+        if entry_price <= 0.0 or exit_price <= 0.0:
             logger.warning(
                 "[MODEL BOOTSTRAP] Skipping %s/%s because price reconstruction is unavailable.",
                 entry.wallet_address,
                 entry.token_mint,
             )
             return None
+
+        entry_snapshot = TokenMarketSnapshot(
+            price_usd=entry_price,
+            liquidity_usd=15000.0,
+            volume_24h=3000.0,
+            pair_created_at=entry.timestamp - timedelta(days=2),
+        )
+        exit_snapshot = TokenMarketSnapshot(
+            price_usd=exit_price,
+            liquidity_usd=15000.0,
+            volume_24h=3000.0,
+            pair_created_at=entry.timestamp - timedelta(days=2),
+        )
 
         if exit_event.timestamp <= entry.timestamp:
             logger.warning(
@@ -455,6 +783,7 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
             entry_snapshot=entry_snapshot,
             exit_snapshot=exit_snapshot,
         )
+
 
     def _build_training_dataset(
         self,

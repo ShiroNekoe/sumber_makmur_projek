@@ -138,6 +138,9 @@ class PredictionResult(BaseModel):
     wallet_source: str
     signature: str
     timestamp: datetime
+    # Flag set by TriggerEngine when an expired cooldown is cleared.
+    # TradeGuard should skip idempotency check when this is True to prevent deadlock.
+    cooldown_already_cleared: bool = False
 
 
 class SafetyCheckResult(BaseModel):

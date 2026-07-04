@@ -1,3 +1,4 @@
+# Trigger auto-reload with active on-chain wallets
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,7 @@ from app.domain.interfaces import IMLPipeline
 logger = logging.getLogger("app.main")
 
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 class StubMLPipeline(IMLPipeline):
@@ -69,7 +70,8 @@ class StubMLPipeline(IMLPipeline):
                 token_address=token_address,
                 wallet_source=wallet_source,
                 signature=trigger_event["signature"],
-                timestamp=trigger_event["timestamp_utc"]
+                timestamp=trigger_event["timestamp_utc"],
+                cooldown_already_cleared=trigger_event.get("cooldown_already_cleared", False)
             )
             
             # Evaluate safety checks
@@ -250,6 +252,9 @@ async def lifespan(app: FastAPI):
             token_info_service=token_info_service,
             retrain_scheduler=retrain_scheduler
         )
+        # F-11 Startup historical bootstrap model training (runs in background to prevent startup block)
+        asyncio.create_task(ml_pipeline.inference_engine.ensure_model_ready())
+
         await recovery_service.run_recovery()
         
         if os.getenv("SIMULATION_MODE") == "True":
@@ -265,6 +270,127 @@ async def lifespan(app: FastAPI):
         await monitor_use_case.initialize_and_start()
         app.state.monitor_use_case = monitor_use_case
 
+        # Initialize Portfolio & PnL Services
+        from app.use_cases.portfolio_service import PortfolioService
+        from app.use_cases.pnl_calculator import PnLCalculator
+        from app.infrastructure.blockchain.wallet_manager import load_wallet_from_env
+
+        portfolio_service = PortfolioService(token_info_service=token_info_service)
+        app.state.portfolio_service = portfolio_service
+
+        pnl_calculator = PnLCalculator(
+            position_repo=position_repo,
+            trade_history_repo=trade_history_repo,
+            portfolio_service=portfolio_service,
+            db_session=db  # Pass db session for equity snapshot recording
+        )
+        app.state.pnl_calculator = pnl_calculator
+
+        async def portfolio_polling_loop():
+            """
+            Polls portfolio and records equity snapshots for accurate history tracking.
+            
+            Strategy:
+            1. Seed historical snapshots if table is empty
+            2. Detect significant portfolio changes (top-ups, trades, etc.)
+            3. Record snapshot immediately when change detected
+            4. Record hourly baseline snapshot for continuity
+            5. Ensure initial snapshot exists for new wallets
+            """
+            await asyncio.sleep(5)  # Wait for app to initialize briefly
+            
+            # Retrieve active wallet address to seed history
+            try:
+                from app.infrastructure.blockchain.wallet_manager import load_wallet_from_env
+                keypair = load_wallet_from_env()
+                pubkey_str = str(keypair.pubkey()) if keypair else "2fRGriSp8o32KdV1K8yxic1ZBLnqJXRiXpQK9ovCebf8"
+                await pnl_calculator.populate_historical_snapshots_if_empty(pubkey_str)
+            except Exception as e:
+                logger.error(f"[PORTFOLIO POLLING] Failed to populate historical snapshots: {e}")
+
+            last_portfolio_value = None
+            last_snapshot_time = None
+            polling_interval = 60  # Poll every 60 seconds for fast change detection
+            
+            while True:
+                try:
+                    keypair = load_wallet_from_env()
+                    pubkey_str = str(keypair.pubkey()) if keypair else "2fRGriSp8o32KdV1K8yxic1ZBLnqJXRiXpQK9ovCebf8"
+                    
+                    summary = await pnl_calculator.get_portfolio_summary(pubkey_str)
+                    current_portfolio_value = summary["portfolio_value_usd"]
+                    
+                    try:
+                        sol_holding = next((h for h in summary.get("holdings", []) if h["symbol"] == "SOL"), None)
+                        sol_balance = sol_holding["amount"] if sol_holding else 0.0
+                        sol_price = sol_holding["price_usd"] if sol_holding else 77.34
+                        token_value = sum(h["value_usd"] for h in summary.get("holdings", []) if h["symbol"] != "SOL")
+                        
+                        # Ensure wallet has initial snapshot
+                        await pnl_calculator.ensure_initial_snapshot(
+                            wallet_address=pubkey_str,
+                            portfolio_value_usd=current_portfolio_value,
+                            sol_balance=sol_balance,
+                            sol_price_usd=sol_price
+                        )
+                        
+                        should_record_snapshot = False
+                        trigger_reason = None
+                        
+                        # Check for significant portfolio changes
+                        if last_portfolio_value is not None:
+                            value_change = abs(current_portfolio_value - last_portfolio_value)
+                            value_change_pct = value_change / last_portfolio_value if last_portfolio_value > 0 else 0
+                            
+                            # Trigger snapshot if: >1% change OR >$10 change
+                            if value_change_pct > 0.01 or value_change > 10.0:
+                                should_record_snapshot = True
+                                trigger_reason = f"significant_change ({value_change_pct*100:.1f}% or ${value_change:.2f})"
+                        
+                        # Trigger hourly snapshot for baseline
+                        now = datetime.now(timezone.utc)
+                        
+                        if last_snapshot_time is None or (now - last_snapshot_time).total_seconds() >= 3600:
+                            should_record_snapshot = True
+                            if trigger_reason is None:
+                                trigger_reason = "hourly_baseline"
+                            else:
+                                trigger_reason += " + hourly_baseline"
+                        
+                        # Record snapshot if triggered
+                        if should_record_snapshot:
+                            await pnl_calculator.record_equity_snapshot(
+                                wallet_address=pubkey_str,
+                                portfolio_value_usd=current_portfolio_value,
+                                sol_balance=sol_balance,
+                                sol_price_usd=sol_price,
+                                token_holdings_value_usd=token_value,
+                                realized_pnl_usd=summary["realized_pnl_usd"],
+                                unrealized_pnl_usd=summary["unrealized_pnl_usd"],
+                                trigger_type="periodic",
+                                trigger_reason=trigger_reason
+                            )
+                            last_snapshot_time = now
+                        
+                        last_portfolio_value = current_portfolio_value
+                        
+                    except Exception as snap_err:
+                        logger.error(f"[PORTFOLIO POLLING] Error in snapshot recording: {snap_err}", exc_info=True)
+                    
+                    # Broadcast portfolio update to websocket clients
+                    await manager.broadcast_event("portfolio_update", summary)
+                    
+                except asyncio.CancelledError:
+                    break
+                except Exception as ex:
+                    logger.error(f"[PORTFOLIO POLLING] Error in polling loop: {ex}")
+                
+                # Poll frequently for change detection, but record hourly
+                await asyncio.sleep(polling_interval)
+
+
+        app.state.portfolio_polling_task = asyncio.create_task(portfolio_polling_loop())
+
         # Start config watchdog hot-reload loop
         if settings.CONFIG_FILE_PATH:
             app.state.config_watch_task = asyncio.create_task(settings.watch_config_loop())
@@ -275,6 +401,10 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown logic
+    if hasattr(app.state, "portfolio_polling_task"):
+        app.state.portfolio_polling_task.cancel()
+        logger.info("[SHUTDOWN] Cancelled portfolio polling task.")
+
     if hasattr(app.state, "config_watch_task"):
         app.state.config_watch_task.cancel()
         logger.info("[SHUTDOWN] Cancelled config hot-reload task.")

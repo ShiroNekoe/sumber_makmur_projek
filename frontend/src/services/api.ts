@@ -13,6 +13,14 @@ export const endpoints = {
   walletCandidates: `${API_BASE_URL}/dashboard/wallets/candidates`,
   approveWallet: (addr: string) => `${API_BASE_URL}/dashboard/wallets/${addr}/approve`,
   dashboardErrors: `${API_BASE_URL}/dashboard/errors`,
+  dashboardPortfolio: `${API_BASE_URL}/dashboard/portfolio`,
+  dashboardActiveWallets: `${API_BASE_URL}/dashboard/wallets/active`,
+};
+
+export const fetchDashboardPortfolio = async () => {
+  const res = await fetch(endpoints.dashboardPortfolio);
+  if (!res.ok) throw new Error('Failed to fetch portfolio summary');
+  return res.json();
 };
 
 export const fetchDashboardStats = async () => {
@@ -70,5 +78,11 @@ export const triggerManualRetrain = async () => {
 export const fetchSystemErrors = async (limit = 50) => {
   const res = await fetch(`${endpoints.dashboardErrors}?limit=${limit}`);
   if (!res.ok) throw new Error('Failed to fetch system error logs');
+  return res.json();
+};
+
+export const fetchActiveWallets = async () => {
+  const res = await fetch(endpoints.dashboardActiveWallets);
+  if (!res.ok) throw new Error('Failed to fetch active wallets');
   return res.json();
 };

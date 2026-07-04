@@ -9,4 +9,6 @@ xgboost>=2.0.0
 sqlalchemy>=2.0.0
 cryptography>=42.0.0
 pyyaml>=6.0.0
+solders>=0.21.0
+solana>=0.30.2
 

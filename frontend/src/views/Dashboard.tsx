@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { 
   Activity, 
   Wifi, 
@@ -18,7 +18,8 @@ import {
   ListFilter,
   History,
   AlertOctagon,
-  Eye
+  Eye,
+  Briefcase,
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { 
@@ -28,7 +29,9 @@ import {
   fetchSystemStatus, 
   fetchRecentTrades, 
   fetchRecentSignals, 
-  fetchSystemErrors 
+  fetchSystemErrors,
+  fetchDashboardPortfolio,
+  fetchActiveWallets,
 } from '../services/api'
 
 export const Dashboard: React.FC = () => {
@@ -48,6 +51,7 @@ export const Dashboard: React.FC = () => {
     selectedTrade,
     selectedError,
     errorLogs,
+    portfolio,
     setWalletCandidates,
     setSystemStatus,
     approveWalletCandidate,
@@ -59,8 +63,45 @@ export const Dashboard: React.FC = () => {
     setSelectedError,
     setErrorLogs,
     addSignal,
-    addTrade
+    addTrade,
+    setTradeLog,
+    setPortfolio,
+    activeWallets,
+    setActiveWallets,
   } = useStore()
+
+  const [timeframe, setTimeframe] = useState<'1D' | '7D' | '30D' | '180D' | '360D'>('7D');
+  const [hoveredPoint, setHoveredPoint] = useState<any | null>(null);
+  const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
+
+  const handleSvgInteraction = (e: React.MouseEvent<SVGSVGElement> | React.TouchEvent<SVGSVGElement>, historyToUse: any[]) => {
+    if (!historyToUse || historyToUse.length === 0) return;
+    
+    let clientX = 0;
+    if ('touches' in e) {
+      if (e.touches.length === 0) return;
+      clientX = e.touches[0].clientX;
+    } else {
+      clientX = e.clientX;
+    }
+    
+    const svgElement = e.currentTarget;
+    const rect = svgElement.getBoundingClientRect();
+    const relativeX = clientX - rect.left;
+    
+    const viewBoxX = (relativeX / rect.width) * 600;
+    const chartWidth = 500;
+    const chartStart = 50;
+    const fraction = (viewBoxX - chartStart) / chartWidth;
+    const index = Math.min(
+      historyToUse.length - 1,
+      Math.max(0, Math.round(fraction * (historyToUse.length - 1)))
+    );
+    
+    const point = historyToUse[index];
+    setHoveredPoint(point);
+    setHoveredPointIndex(index);
+  };
 
   // Load and refresh tab data
   useEffect(() => {
@@ -73,6 +114,14 @@ export const Dashboard: React.FC = () => {
         const status = await fetchSystemStatus()
         if (status) {
           setSystemStatus(status)
+        }
+        const activeWalletsRes = await fetchActiveWallets()
+        if (activeWalletsRes) {
+          setActiveWallets(activeWalletsRes)
+        }
+        const portRes = await fetchDashboardPortfolio()
+        if (portRes) {
+          setPortfolio(portRes)
         }
       } catch (err) {
         console.warn("Failed fetching initial dashboard API data:", err)
@@ -93,16 +142,17 @@ export const Dashboard: React.FC = () => {
         } else if (activeTab === 'trades') {
           const tradesRes = await fetchRecentTrades(50)
           if (tradesRes && tradesRes.trades) {
-            // Populate store trade log from API
-            tradesRes.trades.forEach((t: any) => {
-              addTrade({
-                id: t.trade_id,
-                direction: t.direction,
-                token: t.token_symbol || t.token_address.substring(0, 6),
-                pnl: `${t.pnl_pct_actual >= 0 ? '+' : ''}${(t.pnl_pct_actual * 100).toFixed(1)}%`,
-                isPositive: t.pnl_pct_actual >= 0
-              })
-            })
+            // Replace entire trade log to avoid duplicates on tab re-open
+            const mapped = tradesRes.trades.map((t: any) => ({
+              id: t.trade_id,
+              direction: t.direction,
+              token: t.token_symbol || t.token_address.substring(0, 8),
+              pnl: `${t.pnl_pct_actual >= 0 ? '+' : ''}${(t.pnl_pct_actual * 100).toFixed(1)}%`,
+              isPositive: t.pnl_pct_actual >= 0,
+              holdingTime: `${t.holding_time_minutes ?? '--'} min`,
+              exitReason: t.exit_reason || 'unknown',
+            }))
+            setTradeLog(mapped)
           }
         } else if (activeTab === 'signals') {
           const sigsRes = await fetchRecentSignals(48)
@@ -111,13 +161,24 @@ export const Dashboard: React.FC = () => {
               addSignal({
                 id: s.signal_id,
                 direction: s.direction,
-                token: s.token_short,
+                token: s.token_short || s.token_symbol || (s.token_address ? `${s.token_address.slice(0,6)}...${s.token_address.slice(-4)}` : 'UNKNOWN'),
                 confidence: Math.round(s.confidence_score * 100),
                 timestamp: new Date(s.timestamp).toLocaleTimeString(),
-                details: `Wallet: ${s.wallet_short}`,
-                safetyPassed: s.safety_passed
+                details: `Wallet: ${s.wallet_short || s.wallet_source?.slice(0,8) || ''}`,
+                safetyPassed: s.safety_passed,
+                features: s.features || null,
+                // Extra fields for Drill-Down
+                token_address: s.token_address,
+                token_symbol: s.token_symbol || '',
+                token_name: s.token_name || '',
+                dex_url: s.dex_url || ''
               })
             })
+          }
+        } else if (activeTab === 'portfolio') {
+          const portRes = await fetchDashboardPortfolio()
+          if (portRes) {
+            setPortfolio(portRes)
           }
         }
       } catch (err) {
@@ -134,6 +195,15 @@ export const Dashboard: React.FC = () => {
       if (res.success) {
         approveWalletCandidate(address, action)
         addNotification(`Wallet candidate successfully ${action}d`, 'success')
+        // Refresh candidates list from API to sync with backend state
+        try {
+          const cands = await fetchWalletCandidates()
+          if (cands && cands.candidates) {
+            setWalletCandidates(cands.candidates)
+          }
+        } catch (refreshErr) {
+          console.warn('Could not refresh candidates list:', refreshErr)
+        }
       }
     } catch (err) {
       console.error(err)
@@ -214,6 +284,13 @@ export const Dashboard: React.FC = () => {
             <span>OVERVIEW</span>
           </button>
           <button 
+            onClick={() => setActiveTab('portfolio')} 
+            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded transition-all cursor-pointer ${activeTab === 'portfolio' ? 'bg-indigo-600 text-white shadow' : 'text-cyber-textMuted hover:text-white'}`}
+          >
+            <Briefcase className="w-3.5 h-3.5" />
+            <span>PORTFOLIO</span>
+          </button>
+          <button 
             onClick={() => setActiveTab('watchlist')} 
             className={`flex items-center space-x-1.5 px-3 py-1.5 rounded transition-all cursor-pointer ${activeTab === 'watchlist' ? 'bg-indigo-600 text-white shadow' : 'text-cyber-textMuted hover:text-white'}`}
           >
@@ -278,6 +355,325 @@ export const Dashboard: React.FC = () => {
       {/* RENDER VIEW DEPENDING ON ACTIVE TAB */}
       <div className="flex-1 flex flex-col space-y-6">
 
+        {/* TAB 0: PORTFOLIO */}
+        {activeTab === 'portfolio' && (() => {
+          const solHolding = portfolio?.holdings?.find((h: any) => h.symbol === 'SOL');
+          const wsolHolding = portfolio?.holdings?.find((h: any) => h.symbol === 'WSOL');
+          const solPrice = solHolding?.price_usd || 77.34;
+          const solAmount = solHolding?.amount || 0;
+          const solValUsd = solAmount * solPrice;
+          
+          const wsolAmount = wsolHolding?.amount || 0;
+          const wsolValUsd = wsolAmount * solPrice;
+
+          // Select the correct history array based on the timeframe tab selection
+          const history1d = portfolio?.history_1d || [];
+          const history7d = portfolio?.history_7d || [];
+          const history30d = portfolio?.history_30d || [];
+          const history180d = portfolio?.history_180d || [];
+          const history360d = portfolio?.history_360d || [];
+          
+          let historyToUse = history7d;
+          if (timeframe === '1D') historyToUse = history1d;
+          else if (timeframe === '30D') historyToUse = history30d;
+          else if (timeframe === '180D') historyToUse = history180d;
+          else if (timeframe === '360D') historyToUse = history360d;
+
+          // Dynamic balance display during touch/scrubbing
+          const activeValueUsd = hoveredPoint ? hoveredPoint.value_usd : (portfolio?.portfolio_value_usd || 0);
+          const activeValueSol = hoveredPoint && hoveredPoint.sol_balance !== undefined
+            ? hoveredPoint.sol_balance
+            : solAmount;
+
+          // Reconstruct paths for SVG
+          let linePath = "M 50 100 L 550 100";
+          let areaPath = "M 50 180 L 50 100 L 550 100 L 550 180 Z";
+          let points: { x: number; y: number; val: number; ts: string; sol_balance?: number }[] = [];
+          
+          if (historyToUse.length > 0) {
+            const vals = historyToUse.map((h: any) => h.value_usd);
+            const minVal = Math.min(...vals);
+            const maxVal = Math.max(...vals);
+            const valRange = maxVal - minVal;
+            
+            points = historyToUse.map((h: any, i: number) => {
+              const x = historyToUse.length > 1
+                ? 50 + (i * 500) / (historyToUse.length - 1)
+                : 300;
+              const y = valRange > 0 
+                ? 160 - ((h.value_usd - minVal) * 120) / valRange 
+                : 100;
+              return { x, y, val: h.value_usd, ts: h.timestamp, sol_balance: h.sol_balance };
+            });
+            
+            linePath = `M ${points[0].x} ${points[0].y} ` + points.slice(1).map((p: any) => `L ${p.x} ${p.y}`).join(' ');
+            areaPath = `M ${points[0].x} 180 L ${points[0].x} ${points[0].y} ` + 
+                       points.slice(1).map((p: any) => `L ${p.x} ${p.y}`).join(' ') + 
+                       ` L ${points[points.length - 1].x} 180 Z`;
+          }
+
+          return (
+            <div className="space-y-6 animate-fadeIn">
+              {/* Top Stats Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                <div className="bg-cyber-card p-4 rounded-xl border border-cyber-border/60 relative overflow-hidden transition-all duration-300 hover:border-cyber-amber/30">
+                  <div className="flex justify-between items-center">
+                    <p className="text-xs text-cyber-textMuted font-mono uppercase">EST. TOTAL VALUE</p>
+                    {hoveredPoint && (
+                      <span className="text-[9px] font-mono font-bold text-cyber-amber bg-cyber-amber/10 border border-cyber-amber/20 px-1.5 py-0.5 rounded uppercase animate-pulse">
+                        HISTORICAL
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-2xl font-bold text-white mt-1.5 font-mono">
+                    ${activeValueUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                  <p className="text-xs text-indigo-400 mt-1 font-mono">
+                    ≈ {activeValueSol.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })} SOL
+                  </p>
+                </div>
+                <div className="bg-cyber-card p-4 rounded-xl border border-cyber-border/60">
+                  <p className="text-xs text-cyber-textMuted font-mono uppercase">SOLANA BALANCE</p>
+                  <p className="text-2xl font-bold text-indigo-400 mt-1.5 font-mono">
+                    {solAmount.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })} SOL
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1 font-mono">
+                    ≈ ${solValUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                </div>
+                <div className="bg-cyber-card p-4 rounded-xl border border-cyber-border/60">
+                  <p className="text-xs text-cyber-textMuted font-mono uppercase">WRAPPED SOL</p>
+                  <p className="text-2xl font-bold text-indigo-400 mt-1.5 font-mono">
+                    {wsolAmount.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })} WSOL
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1 font-mono">
+                    ≈ ${wsolValUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                </div>
+                <div className="bg-cyber-card p-4 rounded-xl border border-cyber-border/60">
+                  <p className="text-xs text-cyber-textMuted font-mono uppercase">REALIZED PNL</p>
+                  <p className={`text-2xl font-bold mt-1.5 font-mono ${(portfolio?.realized_pnl_usd ?? 0) >= 0 ? 'text-cyber-emerald' : 'text-cyber-rose'}`}>
+                    ${portfolio?.realized_pnl_usd ? portfolio.realized_pnl_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                  </p>
+                </div>
+                <div className="bg-cyber-card p-4 rounded-xl border border-cyber-border/60">
+                  <p className="text-xs text-cyber-textMuted font-mono uppercase">UNREALIZED PNL</p>
+                  <p className={`text-2xl font-bold mt-1.5 font-mono ${(portfolio?.unrealized_pnl_usd ?? 0) >= 0 ? 'text-cyber-emerald' : 'text-cyber-rose'}`}>
+                    ${portfolio?.unrealized_pnl_usd ? portfolio.unrealized_pnl_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Custom SVG Line Chart */}
+              <div className="bg-cyber-card p-6 rounded-xl border border-cyber-border/60 space-y-4">
+                <div className="flex justify-between items-center pb-3 border-b border-cyber-border/40">
+                  <div>
+                    <h3 className="text-sm font-semibold tracking-wider font-mono text-white">PNL GROWTH PERFORMANCE</h3>
+                    {hoveredPoint ? (
+                      <p className="text-[10px] text-cyber-amber font-mono font-bold mt-0.5 uppercase tracking-wider animate-pulse">
+                        Selected: ${hoveredPoint.value_usd.toFixed(2)} USD ({new Date(hoveredPoint.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })})
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-cyber-textMuted font-mono mt-0.5">
+                        REAL-TIME PORTFOLIO TRACKING • {timeframe} SAMPLES
+                      </p>
+                    )}
+                  </div>
+                  <span className="text-xs text-cyber-textMuted font-mono uppercase">EQUITY VALUE TREND</span>
+                </div>
+                
+                <div className="h-64 relative flex items-center justify-center bg-cyber-cardLight/20 rounded-lg border border-cyber-border/30 overflow-hidden select-none">
+                  {/* Glowing Background Lines */}
+                  <div className="absolute inset-0 grid grid-cols-6 grid-rows-4 pointer-events-none opacity-10">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <div key={i} className="border-r border-dashed border-white h-full" />
+                    ))}
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <div key={i} className="border-b border-dashed border-white w-full" />
+                    ))}
+                  </div>
+
+                  {/* SVG Area Chart */}
+                  <svg 
+                    className="w-full h-full p-4 overflow-visible cursor-crosshair" 
+                    viewBox="0 0 600 200" 
+                    preserveAspectRatio="none"
+                    onMouseMove={(e) => handleSvgInteraction(e, historyToUse)}
+                    onTouchMove={(e) => handleSvgInteraction(e, historyToUse)}
+                    onMouseLeave={() => {
+                      setHoveredPoint(null);
+                      setHoveredPointIndex(null);
+                    }}
+                    onTouchEnd={() => {
+                      setHoveredPoint(null);
+                      setHoveredPointIndex(null);
+                    }}
+                  >
+                    <defs>
+                      <linearGradient id="chartGlow" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.4" />
+                        <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.0" />
+                      </linearGradient>
+                    </defs>
+                    
+                    {/* Area */}
+                    <path
+                      d={areaPath}
+                      fill="url(#chartGlow)"
+                    />
+                    
+                    {/* Line */}
+                    <path
+                      d={linePath}
+                      fill="none"
+                      stroke="#818cf8"
+                      strokeWidth="3"
+                      className="drop-shadow-[0_0_8px_rgba(129,140,248,0.5)]"
+                    />
+                    
+                    {/* Interactive Scrubbing Dashed Line and Hover Dot */}
+                    {hoveredPointIndex !== null && points[hoveredPointIndex] && (
+                      <g>
+                        <line 
+                          x1={points[hoveredPointIndex].x} 
+                          y1={10} 
+                          x2={points[hoveredPointIndex].x} 
+                          y2={190} 
+                          stroke="#818cf8" 
+                          strokeDasharray="3 3" 
+                          strokeWidth="1.5" 
+                        />
+                        <circle 
+                          cx={points[hoveredPointIndex].x} 
+                          cy={points[hoveredPointIndex].y} 
+                          r="6" 
+                          fill="#facc15" 
+                          stroke="#818cf8" 
+                          strokeWidth="2.5" 
+                          className="shadow-lg"
+                        />
+                      </g>
+                    )}
+                  </svg>
+
+                  {/* Left / Start Timestamp */}
+                  <div className="absolute bottom-2 left-4 text-[9px] font-mono text-cyber-textMuted">
+                    {historyToUse.length > 0 
+                      ? new Date(historyToUse[0].timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) 
+                      : 'START'}
+                  </div>
+                  {/* Right / End Timestamp */}
+                  <div className="absolute bottom-2 right-4 text-[9px] font-mono text-cyber-textMuted">
+                    {historyToUse.length > 0 
+                      ? new Date(historyToUse[historyToUse.length - 1].timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' (CURRENT)'
+                      : 'END'}
+                  </div>
+                </div>
+
+                {/* Binance-style Timeframe Selector tabs */}
+                <div className="flex justify-center space-x-2 pt-2 border-t border-cyber-border/20">
+                  {(['1D', '7D', '30D', '180D', '360D'] as const).map((tf) => (
+                    <button
+                      key={tf}
+                      onClick={() => {
+                        setTimeframe(tf);
+                        setHoveredPoint(null);
+                        setHoveredPointIndex(null);
+                      }}
+                      className={`px-4 py-1.5 rounded-full text-xs font-bold font-mono transition-all cursor-pointer ${
+                        timeframe === tf
+                          ? 'bg-cyber-amber/10 text-cyber-amber border border-cyber-amber/30 shadow-[0_0_8px_rgba(245,158,11,0.2)]'
+                          : 'text-cyber-textMuted hover:text-white border border-transparent'
+                      }`}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+            {/* SPL Holdings Table */}
+            <div className="bg-cyber-card p-6 rounded-xl border border-cyber-border/60">
+              <div className="flex justify-between items-center pb-3 border-b border-cyber-border/40 mb-4">
+                <h3 className="text-sm font-semibold tracking-wider font-mono text-white">SPL TOKEN HOLDINGS</h3>
+                <span className="text-xs text-cyber-textMuted font-mono">ON-CHAIN SPL BALANCE</span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left font-mono text-xs border-collapse">
+                  <thead>
+                    <tr className="text-cyber-textMuted border-b border-cyber-border/30 pb-2">
+                      <th className="py-2.5">ASSET</th>
+                      <th className="py-2.5">BALANCE</th>
+                      <th className="py-2.5">MARKET PRICE</th>
+                      <th className="py-2.5">COST BASIS</th>
+                      <th className="py-2.5">VALUE (USD)</th>
+                      <th className="py-2.5">UNREALIZED PNL</th>
+                      <th className="py-2.5">ALLOCATION</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {portfolio?.holdings && portfolio.holdings.length > 0 ? (
+                      portfolio.holdings.map((hold: any) => {
+                        const isPos = hold.unrealized_pnl_usd >= 0;
+                        const allocPct = portfolio.portfolio_value_usd > 0 
+                          ? (hold.value_usd / portfolio.portfolio_value_usd) * 100 
+                          : 0;
+                        return (
+                          <tr key={hold.mint} className="border-b border-cyber-border/20 hover:bg-cyber-cardLight/30 transition-colors">
+                            <td className="py-3">
+                              <span className="font-bold text-white block">{hold.symbol}</span>
+                              <span className="text-[10px] text-cyber-textMuted font-mono block max-w-[120px] truncate">{hold.name}</span>
+                            </td>
+                            <td className="py-3 font-semibold text-gray-200">
+                              {hold.amount.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                            </td>
+                            <td className="py-3 text-gray-300">
+                              ${hold.price_usd.toLocaleString(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 })}
+                            </td>
+                            <td className="py-3 text-gray-400">
+                              {hold.cost_basis > 0 
+                                ? `$${hold.cost_basis.toLocaleString(undefined, { minimumFractionDigits: 6, maximumFractionDigits: 6 })}` 
+                                : 'Airdrop/Ext'}
+                            </td>
+                            <td className="py-3 font-bold text-white">
+                              ${hold.value_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className={`py-3 font-bold ${isPos ? 'text-cyber-emerald' : 'text-cyber-rose'}`}>
+                              {isPos ? '+' : ''}${hold.unrealized_pnl_usd.toFixed(2)}
+                              <span className="text-[10px] block opacity-85 font-semibold">
+                                ({isPos ? '+' : ''}{(hold.unrealized_pnl_pct * 100).toFixed(2)}%)
+                              </span>
+                            </td>
+                            <td className="py-3">
+                              <div className="flex items-center space-x-2">
+                                <div className="w-16 bg-cyber-cardLight h-1.5 rounded-full overflow-hidden">
+                                  <div 
+                                    className="bg-indigo-500 h-full" 
+                                    style={{ width: `${Math.min(allocPct, 100)}%` }}
+                                  />
+                                </div>
+                                <span className="text-gray-300 text-[10px]">{allocPct.toFixed(1)}%</span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={7} className="text-center py-6 text-cyber-textMuted font-mono">
+                          No active SPL holdings detected in loaded wallet address.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
         {/* TAB 1: OVERVIEW */}
         {activeTab === 'overview' && (
           <>
@@ -288,27 +684,24 @@ export const Dashboard: React.FC = () => {
                   <Compass className="w-5 h-5 text-indigo-400" />
                   <h2 className="text-sm font-semibold tracking-wider text-white font-mono">WALLET WATCHLIST</h2>
                 </div>
-                <div className="bg-cyber-cardLight/40 rounded-lg p-3 border border-cyber-border/40">
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-xs font-semibold text-gray-300 font-mono">Whale Wallet A</span>
-                    <span className={`h-2 w-2 rounded-full ${walletMonitor.whaleA.active ? 'bg-cyber-emerald shadow-[0_0_8px_#10B981]' : 'bg-cyber-rose shadow-[0_0_8px_#F43F5E]'}`}></span>
-                  </div>
-                  <p className="text-[10px] text-cyber-textMuted font-mono truncate">WhaleA11111111111111111111111111111111111</p>
-                  <div className="mt-2 flex justify-between items-center text-xs">
-                    <span className="text-cyber-textMuted">Activity:</span>
-                    <span className="font-mono text-gray-200">{walletMonitor.whaleA.txCount}</span>
-                  </div>
-                </div>
-                <div className="bg-cyber-cardLight/40 rounded-lg p-3 border border-cyber-border/40">
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-xs font-semibold text-gray-300 font-mono">Whale Wallet B</span>
-                    <span className={`h-2 w-2 rounded-full ${walletMonitor.whaleB.active ? 'bg-cyber-emerald shadow-[0_0_8px_#10B981]' : 'bg-cyber-rose shadow-[0_0_8px_#F43F5E]'}`}></span>
-                  </div>
-                  <p className="text-[10px] text-cyber-textMuted font-mono truncate">WhaleB22222222222222222222222222222222222</p>
-                  <div className="mt-2 flex justify-between items-center text-xs">
-                    <span className="text-cyber-textMuted">Activity:</span>
-                    <span className="font-mono text-gray-200">{walletMonitor.whaleB.txCount}</span>
-                  </div>
+                <div className="max-h-[320px] overflow-y-auto pr-1.5 space-y-3">
+                  {activeWallets.length > 0 ? (
+                    activeWallets.map((wallet) => (
+                      <div key={wallet.wallet_address} className="bg-cyber-cardLight/40 rounded-lg p-3 border border-cyber-border/40">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-semibold text-gray-300 font-mono">{wallet.label || 'Whale Wallet'}</span>
+                          <span className={`h-2 w-2 rounded-full ${wallet.active ? 'bg-cyber-emerald shadow-[0_0_8px_#10B981]' : 'bg-cyber-rose shadow-[0_0_8px_#F43F5E]'}`}></span>
+                        </div>
+                        <p className="text-[10px] text-cyber-textMuted font-mono truncate" title={wallet.wallet_address}>{wallet.wallet_address}</p>
+                        <div className="mt-2 flex justify-between items-center text-xs">
+                          <span className="text-cyber-textMuted">Source:</span>
+                          <span className="font-mono text-gray-200 uppercase">{wallet.source}</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-xs text-cyber-textMuted font-mono text-center py-4">No active wallets loaded.</p>
+                  )}
                 </div>
                 <div className="pt-2">
                   <div className="flex justify-between items-center text-xs py-2 border-b border-cyber-border/20">
@@ -547,16 +940,19 @@ export const Dashboard: React.FC = () => {
                 <h2 className="text-sm font-semibold tracking-wider text-white font-mono">ACTIVE TARGETS</h2>
               </div>
               <div className="space-y-4">
-                <div className="p-3.5 rounded bg-cyber-cardLight border border-cyber-border/40">
-                  <p className="text-xs font-bold text-gray-300 font-mono">Whale Wallet A</p>
-                  <p className="text-[10px] text-cyber-textMuted font-mono mt-1 break-all">Wha1eA11111111111111111111111111111111111</p>
-                  <span className="mt-2.5 inline-flex items-center px-2 py-0.5 rounded text-[8px] font-bold bg-cyber-emerald/10 text-cyber-emerald border border-cyber-emerald/20 font-mono uppercase">PRIMARY TARGET</span>
-                </div>
-                <div className="p-3.5 rounded bg-cyber-cardLight border border-cyber-border/40">
-                  <p className="text-xs font-bold text-gray-300 font-mono">Whale Wallet B</p>
-                  <p className="text-[10px] text-cyber-textMuted font-mono mt-1 break-all">Wha1eB22222222222222222222222222222222222</p>
-                  <span className="mt-2.5 inline-flex items-center px-2 py-0.5 rounded text-[8px] font-bold bg-cyber-emerald/10 text-cyber-emerald border border-cyber-emerald/20 font-mono uppercase">PRIMARY TARGET</span>
-                </div>
+                {activeWallets.length > 0 ? (
+                  activeWallets.map((wallet) => (
+                    <div key={wallet.wallet_address} className="p-3.5 rounded bg-cyber-cardLight border border-cyber-border/40">
+                      <p className="text-xs font-bold text-gray-300 font-mono">{wallet.label || 'Whale Target'}</p>
+                      <p className="text-[10px] text-cyber-textMuted font-mono mt-1 break-all">{wallet.wallet_address}</p>
+                      <span className="mt-2.5 inline-flex items-center px-2 py-0.5 rounded text-[8px] font-bold bg-cyber-emerald/10 text-cyber-emerald border border-cyber-emerald/20 font-mono uppercase">
+                        {wallet.source === 'manual' ? 'MANUAL TARGET' : 'DYNAMIC TARGET'}
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-xs text-cyber-textMuted font-mono text-center py-4">No active watchlist wallets.</p>
+                )}
               </div>
             </section>
           </div>
@@ -653,10 +1049,10 @@ export const Dashboard: React.FC = () => {
                         <td className={`py-3 px-3 font-bold ${trade.isPositive ? 'text-cyber-emerald' : 'text-cyber-rose'}`}>
                           {trade.isPositive ? '+' : ''}{(parseFloat(trade.pnl) / 10).toFixed(2)}R
                         </td>
-                        <td className="py-3 px-3 text-cyber-textMuted">12 min</td>
+                        <td className="py-3 px-3 text-cyber-textMuted">{trade.holdingTime ?? '-- min'}</td>
                         <td className="py-3 px-3">
                           <span className="text-[10px] bg-cyber-cardLight px-2 py-0.5 rounded border border-cyber-border text-gray-200">
-                            trailing_tp
+                            {trade.exitReason ?? 'unknown'}
                           </span>
                         </td>
                         <td className="py-3 px-3 text-right">
@@ -784,33 +1180,115 @@ export const Dashboard: React.FC = () => {
               </button>
             </div>
             <div className="space-y-3 font-mono text-xs">
-              <div className="grid grid-cols-2 gap-2 border-b border-cyber-border/20 pb-2">
-                <span className="text-cyber-textMuted">Token Symbol:</span>
-                <span className="font-bold text-indigo-400">{selectedSignal.token}</span>
+              <div className="border-b border-cyber-border/20 pb-2 space-y-1">
+                <div className="grid grid-cols-2 gap-2">
+                  <span className="text-cyber-textMuted">Token Symbol:</span>
+                  <span className="font-bold text-indigo-400">
+                    {selectedSignal.token_symbol || selectedSignal.token || 'Unknown'}
+                  </span>
+                </div>
+                {selectedSignal.token_name && selectedSignal.token_name !== selectedSignal.token_symbol && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <span className="text-cyber-textMuted">Token Name:</span>
+                    <span className="text-gray-300">{selectedSignal.token_name}</span>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <span className="text-cyber-textMuted">Address:</span>
+                  <span className="text-gray-300 break-all">
+                    {selectedSignal.token_address
+                      ? <a
+                          href={selectedSignal.dex_url || `https://dexscreener.com/solana/${selectedSignal.token_address}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-indigo-300 underline hover:text-indigo-100"
+                        >
+                          {selectedSignal.token_address.slice(0, 8)}...{selectedSignal.token_address.slice(-6)}
+                          {' '}🔗
+                        </a>
+                      : selectedSignal.token
+                    }
+                  </span>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2 border-b border-cyber-border/20 pb-2">
                 <span className="text-cyber-textMuted">Confidence:</span>
                 <span className="font-bold text-white">{selectedSignal.confidence}%</span>
               </div>
               <div className="grid grid-cols-2 gap-2 border-b border-cyber-border/20 pb-2">
+                <span className="text-cyber-textMuted">Direction:</span>
+                <span className={`font-bold ${selectedSignal.direction === 'BUY' ? 'text-cyber-emerald' : selectedSignal.direction === 'SELL' ? 'text-cyber-rose' : 'text-gray-400'}`}>
+                  {selectedSignal.direction || 'HOLD'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 border-b border-cyber-border/20 pb-2">
                 <span className="text-cyber-textMuted">Safety Status:</span>
-                <span className="font-bold text-cyber-emerald">{selectedSignal.safetyPassed ? 'PASSED' : 'BLOCKED'}</span>
+                <span className={`font-bold ${selectedSignal.safetyPassed ? 'text-cyber-emerald' : 'text-cyber-rose'}`}>
+                  {selectedSignal.safetyPassed ? 'PASSED' : 'BLOCKED'}
+                </span>
               </div>
               <div>
                 <p className="text-xs font-bold text-gray-300 mb-1.5">ML Feature Input Vectors:</p>
                 <div className="bg-cyber-cardLight p-3 rounded border border-cyber-border/40 space-y-1 text-[10px] text-cyber-textMuted">
-                  <div>• position_size_usd: <span className="text-gray-300">150.00</span></div>
-                  <div>• token_age_minutes: <span className="text-gray-300">120.00</span></div>
-                  <div>• liquidity_pool_depth: <span className="text-gray-300">15,000.00</span></div>
-                  <div>• slippage_actual: <span className="text-gray-300">0.012</span></div>
-                  <div>• win_rate_30d: <span className="text-gray-300">0.55</span></div>
-                  <div>• avg_holding_time_minutes: <span className="text-gray-300">15.0</span></div>
-                  <div>• sol_usd_momentum: <span className="text-gray-300">0.024</span></div>
+                  <div>• position_size_usd: <span className="text-gray-300">
+                    {selectedSignal.features?.position_size_usd !== undefined 
+                      ? selectedSignal.features.position_size_usd.toFixed(2) 
+                      : '150.00'}
+                  </span></div>
+                  <div>• token_age_minutes: <span className="text-gray-300">
+                    {selectedSignal.features?.token_age_minutes !== undefined 
+                      ? selectedSignal.features.token_age_minutes.toFixed(1) 
+                      : '120.00'}
+                  </span> <span className="text-cyber-amber/60">(on-chain)</span></div>
+                  <div>• liquidity_pool_depth: <span className="text-gray-300">
+                    {selectedSignal.features?.liquidity_pool_depth !== undefined 
+                      ? selectedSignal.features.liquidity_pool_depth.toLocaleString(undefined, { maximumFractionDigits: 2 }) 
+                      : '15,000.00'}
+                  </span> <span className="text-cyber-amber/60">(on-chain)</span></div>
+                  <div>• slippage_actual: <span className="text-gray-300">
+                    {selectedSignal.features?.slippage_actual !== undefined && selectedSignal.features.slippage_actual !== null 
+                      ? selectedSignal.features.slippage_actual.toFixed(3) 
+                      : '0.012'}
+                  </span></div>
+                  <div>• win_rate_30d: <span className="text-gray-300">
+                    {selectedSignal.features?.win_rate_30d !== undefined 
+                      ? selectedSignal.features.win_rate_30d.toFixed(2) 
+                      : '0.55'}
+                  </span> <span className="text-cyber-textMuted/60">(prior / SQLite)</span></div>
+                  <div>• avg_holding_time_minutes: <span className="text-gray-300">
+                    {selectedSignal.features?.avg_holding_time_minutes !== undefined 
+                      ? selectedSignal.features.avg_holding_time_minutes.toFixed(1) 
+                      : '15.0'}
+                  </span> <span className="text-cyber-textMuted/60">(prior / SQLite)</span></div>
+                  <div>• sol_usd_momentum: <span className="text-gray-300">
+                    {selectedSignal.features?.sol_usd_momentum !== undefined 
+                      ? selectedSignal.features.sol_usd_momentum.toFixed(3) 
+                      : '0.024'}
+                  </span></div>
+                  <div>• cluster_score: <span className="text-gray-300">
+                    {selectedSignal.features?.cluster_score !== undefined 
+                      ? selectedSignal.features.cluster_score.toFixed(1)
+                      : '0.0'}
+                  </span> <span className="text-cyber-textMuted/60">(AND mode boost)</span></div>
                 </div>
+                <p className="text-[9px] text-cyber-textMuted/50 mt-1">
+                  <span className="text-cyber-amber/60">on-chain</span> = real DexScreener data · 
+                  <span className="text-cyber-textMuted/60"> prior/SQLite</span> = historical average (no real trades yet)
+                </p>
               </div>
             </div>
-            <div className="text-right pt-3">
-              <button onClick={() => setSelectedSignal(null)} className="px-4 py-1.5 bg-indigo-600 text-white rounded text-xs font-mono font-bold cursor-pointer">
+            <div className="flex justify-between items-center pt-3">
+              {selectedSignal.token_address && (
+                <a
+                  href={selectedSignal.dex_url || `https://pump.fun/${selectedSignal.token_address}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 bg-indigo-900/50 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-700 rounded text-xs font-mono transition-colors"
+                >
+                  Open on DEX 🔗
+                </a>
+              )}
+              <button onClick={() => setSelectedSignal(null)} className="px-4 py-1.5 bg-indigo-600 text-white rounded text-xs font-mono font-bold cursor-pointer ml-auto">
                 Close
               </button>
             </div>

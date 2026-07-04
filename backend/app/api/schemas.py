@@ -10,6 +10,24 @@ from pydantic import BaseModel
 
 # ─── Signal Schemas ─────────────────────────────────────────────────────────
 
+class FeatureVectorResponse(BaseModel):
+    position_size_usd: float
+    token_age_minutes: float
+    liquidity_pool_depth: float
+    slippage_actual: Optional[float] = None
+    cluster_score: float
+    win_rate_30d: float
+    avg_holding_time_minutes: float
+    typical_trade_size_usd: float
+    past_exit_pattern_score: float
+    sol_usd_momentum: float
+    token_volume_liquidity_ratio: float
+    hour_of_day_utc: int
+
+    class Config:
+        from_attributes = True
+
+
 class SignalResponse(BaseModel):
     """A single ML prediction signal that passed the safety gate."""
     signal_id: str
@@ -21,6 +39,7 @@ class SignalResponse(BaseModel):
     confidence_score: float
     safety_passed: bool
     timestamp: datetime
+    features: Optional[FeatureVectorResponse] = None
 
     class Config:
         from_attributes = True
@@ -161,3 +180,37 @@ class SystemErrorResponse(BaseModel):
 class SystemErrorListResponse(BaseModel):
     errors: List[SystemErrorResponse]
     total: int
+
+
+# ─── Portfolio & PnL Schemas ──────────────────────────────────────────────────
+
+class HoldingResponse(BaseModel):
+    mint: str
+    symbol: str
+    name: str
+    amount: float
+    price_usd: float
+    cost_basis: float
+    value_usd: float
+    unrealized_pnl_usd: float
+    unrealized_pnl_pct: float
+
+
+class HistorySample(BaseModel):
+    timestamp: str
+    value_usd: float
+    pnl_usd: float
+    sol_balance: float = 0.0  # SOL balance at this timestamp
+
+
+class PortfolioSummaryResponse(BaseModel):
+    realized_pnl_usd: float
+    unrealized_pnl_usd: float
+    total_pnl_usd: float
+    portfolio_value_usd: float
+    holdings: List[HoldingResponse]
+    history_1d: List[HistorySample] = []
+    history_7d: List[HistorySample] = []
+    history_30d: List[HistorySample] = []
+    history_180d: List[HistorySample] = []
+    history_360d: List[HistorySample] = []

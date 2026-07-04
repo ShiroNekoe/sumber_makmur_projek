@@ -33,8 +33,9 @@ class TestTriggerEngineCooldown(unittest.IsolatedAsyncioTestCase):
     async def test_no_cooldown_returns_false(self):
         self.cooldown_repo.get_cooldown.return_value = None
         
-        is_cooldown = await self.engine._check_cooldown("whale_addr", "token_mint")
+        is_cooldown, was_cleared = await self.engine._check_cooldown("whale_addr", "token_mint")
         self.assertFalse(is_cooldown)
+        self.assertFalse(was_cleared)
 
     async def test_pending_cooldown_active_during_window(self):
         # Setup: Cooldown created 10 seconds ago, no position linked yet
@@ -45,8 +46,9 @@ class TestTriggerEngineCooldown(unittest.IsolatedAsyncioTestCase):
             active_position_id=None
         )
 
-        is_cooldown = await self.engine._check_cooldown("whale_addr", "token_mint")
+        is_cooldown, was_cleared = await self.engine._check_cooldown("whale_addr", "token_mint")
         self.assertTrue(is_cooldown)
+        self.assertFalse(was_cleared)
 
     async def test_pending_cooldown_expired_cleans_up(self):
         # Setup: Cooldown created 6 minutes ago, no position linked
@@ -57,8 +59,10 @@ class TestTriggerEngineCooldown(unittest.IsolatedAsyncioTestCase):
             active_position_id=None
         )
 
-        is_cooldown = await self.engine._check_cooldown("whale_addr", "token_mint")
+        is_cooldown, was_cleared = await self.engine._check_cooldown("whale_addr", "token_mint")
         self.assertFalse(is_cooldown)
+        # was_cleared=True means TradeGuard should skip idempotency check
+        self.assertTrue(was_cleared)
         self.cooldown_repo.delete_cooldown.assert_called_once_with("whale_addr", "token_mint")
 
     async def test_linked_position_active_cooldown(self):
@@ -82,8 +86,9 @@ class TestTriggerEngineCooldown(unittest.IsolatedAsyncioTestCase):
             model_version="v0"
         )
 
-        is_cooldown = await self.engine._check_cooldown("whale_addr", "token_mint")
+        is_cooldown, was_cleared = await self.engine._check_cooldown("whale_addr", "token_mint")
         self.assertTrue(is_cooldown)
+        self.assertFalse(was_cleared)
 
     async def test_linked_position_closed_cooldown_resets(self):
         # Setup: Cooldown linked to pos_123
@@ -106,6 +111,8 @@ class TestTriggerEngineCooldown(unittest.IsolatedAsyncioTestCase):
             model_version="v0"
         )
 
-        is_cooldown = await self.engine._check_cooldown("whale_addr", "token_mint")
+        is_cooldown, was_cleared = await self.engine._check_cooldown("whale_addr", "token_mint")
         self.assertFalse(is_cooldown)
+        # was_cleared=True: cooldown was reset because position closed
+        self.assertTrue(was_cleared)
         self.cooldown_repo.delete_cooldown.assert_called_once_with("whale_addr", "token_mint")
