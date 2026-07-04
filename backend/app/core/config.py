@@ -34,8 +34,11 @@ class Settings(BaseSettings):
     ]
 
     
-    # SQLite Database Configuration
-    DATABASE_URL: str = "sqlite:///sumber_makmur.db"
+    # SQLite Database Configuration (Always resolve absolutely to the workspace root)
+    DATABASE_URL: str = "sqlite:///" + os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "sumber_makmur.db")
+    ).replace("\\", "/")
+
     
     # Secure storage for wallet private key (encrypted file)
     ENCRYPTED_KEYPAIR_PATH: str = "wallet_keypair.enc"
