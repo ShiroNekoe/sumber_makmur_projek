@@ -11,6 +11,14 @@ from app.use_cases.portfolio_service import PortfolioService
 
 class TestPortfolioPnLGuard(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # Reset degraded mode to prevent pollution from test_rpc_fallback tests
+        from app.blockchain.monitor import SolanaWebSocketMonitor
+        SolanaWebSocketMonitor.degraded_mode = False
+
+        # Reset in-memory processed signatures to prevent idempotency pollution
+        from app.use_cases.trade_guard import TradeGuard as _TG
+        _TG._processed_signatures.clear()
+
         # Mock repositories for TradeGuard
         self.mock_position_repo = MagicMock()
         self.mock_cooldown_repo = MagicMock()
@@ -20,6 +28,7 @@ class TestPortfolioPnLGuard(unittest.IsolatedAsyncioTestCase):
             position_repo=self.mock_position_repo,
             cooldown_repo=self.mock_cooldown_repo
         )
+
         
         self.pred = PredictionResult(
             direction="BUY",
