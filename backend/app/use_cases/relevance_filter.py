@@ -23,6 +23,15 @@ class RelevanceFilter(IRelevanceFilter):
         "675k1aCcZ1V9et197Y21o5t3A8tFmgm5Rz2845m2u3"   # Raydium AMM V4
     ]
 
+    # Exclude base liquidity and stable tokens from entering the ML pipeline
+    BASE_TOKENS_BLACKLIST = {
+        "So11111111111111111111111111111111111111112",  # Wrapped SOL
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
+        "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",  # USDH
+    }
+
+
     def __init__(
         self,
         filter_log_repo: IFilterLogRepository,
@@ -106,6 +115,13 @@ class RelevanceFilter(IRelevanceFilter):
                 if amount_usd < min_lp:
                     is_relevant = False
                     reason = f"insignificant_lp_change (LP Change ${amount_usd:.2f} < ${min_lp:.2f})"
+
+            # --- Rule 6: Base/Stable Token Blacklist Check ---
+            if is_relevant and token_mint:
+                if token_mint in self.BASE_TOKENS_BLACKLIST:
+                    is_relevant = False
+                    reason = f"base_stable_token_blacklisted ({token_mint})"
+
 
             # --- Logging and Persisting ---
             log_id = uuid.uuid4().hex
