@@ -40,9 +40,13 @@ class SignalResponse(BaseModel):
     safety_passed: bool
     timestamp: datetime
     features: Optional[FeatureVectorResponse] = None
+    token_symbol: Optional[str] = ""
+    token_name: Optional[str] = ""
+    dex_url: Optional[str] = ""
 
     class Config:
         from_attributes = True
+
 
 
 class SignalListResponse(BaseModel):

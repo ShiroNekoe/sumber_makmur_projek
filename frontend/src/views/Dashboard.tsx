@@ -1184,7 +1184,7 @@ export const Dashboard: React.FC = () => {
                 <div className="grid grid-cols-2 gap-2">
                   <span className="text-cyber-textMuted">Token Symbol:</span>
                   <span className="font-bold text-indigo-400">
-                    {selectedSignal.token_symbol || selectedSignal.token || 'Unknown'}
+                    {selectedSignal.token_symbol || 'N/A (No Metadata)'}
                   </span>
                 </div>
                 {selectedSignal.token_name && selectedSignal.token_name !== selectedSignal.token_symbol && (
@@ -1194,22 +1194,30 @@ export const Dashboard: React.FC = () => {
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-2">
-                  <span className="text-cyber-textMuted">Address:</span>
-                  <span className="text-gray-300 break-all">
-                    {selectedSignal.token_address
-                      ? <a
-                          href={selectedSignal.dex_url || `https://dexscreener.com/solana/${selectedSignal.token_address}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-indigo-300 underline hover:text-indigo-100"
-                        >
-                          {selectedSignal.token_address.slice(0, 8)}...{selectedSignal.token_address.slice(-6)}
-                          {' '}🔗
-                        </a>
-                      : selectedSignal.token
-                    }
+                  <span className="text-cyber-textMuted">Full Address:</span>
+                  <span className="text-gray-300 break-all select-all bg-cyber-cardLight p-1 rounded border border-cyber-border/20">
+                    {selectedSignal.token_address || selectedSignal.token}
                   </span>
                 </div>
+                {selectedSignal.token_address && (
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <span className="text-cyber-textMuted">DEX Link:</span>
+                    <span>
+                      <a
+                        href={
+                          selectedSignal.token_address.endsWith('pump')
+                            ? `https://pump.fun/${selectedSignal.token_address}`
+                            : `https://dexscreener.com/solana/${selectedSignal.token_address}`
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-indigo-300 underline hover:text-indigo-100 font-bold"
+                      >
+                        {selectedSignal.token_address.endsWith('pump') ? 'Open on Pump.fun 💊' : 'Open on DexScreener 📈'}
+                      </a>
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-2 border-b border-cyber-border/20 pb-2">
                 <span className="text-cyber-textMuted">Confidence:</span>
@@ -1280,12 +1288,16 @@ export const Dashboard: React.FC = () => {
             <div className="flex justify-between items-center pt-3">
               {selectedSignal.token_address && (
                 <a
-                  href={selectedSignal.dex_url || `https://pump.fun/${selectedSignal.token_address}`}
+                  href={
+                    selectedSignal.token_address.endsWith('pump')
+                      ? `https://pump.fun/${selectedSignal.token_address}`
+                      : `https://dexscreener.com/solana/${selectedSignal.token_address}`
+                  }
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="px-3 py-1.5 bg-indigo-900/50 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-700 rounded text-xs font-mono transition-colors"
+                  className="px-3 py-1.5 bg-indigo-900/50 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-700 rounded text-xs font-mono transition-colors font-bold"
                 >
-                  Open on DEX 🔗
+                  {selectedSignal.token_address.endsWith('pump') ? 'Open on Pump.fun 💊' : 'Open on DexScreener 📈'}
                 </a>
               )}
               <button onClick={() => setSelectedSignal(null)} className="px-4 py-1.5 bg-indigo-600 text-white rounded text-xs font-mono font-bold cursor-pointer ml-auto">

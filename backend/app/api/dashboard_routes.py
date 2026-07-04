@@ -109,7 +109,10 @@ async def get_recent_signals(
                     s.get("timestamp", datetime.now(timezone.utc).isoformat())
                     .replace("Z", "+00:00")
                 ),
-                features=features_mapped
+                features=features_mapped,
+                token_symbol=s.get("token_symbol", ""),
+                token_name=s.get("token_name", ""),
+                dex_url=s.get("dex_url", "")
             ))
         return SignalListResponse(signals=signals, total=len(signals), hours_window=hours)
     except HTTPException:
