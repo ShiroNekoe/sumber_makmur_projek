@@ -400,11 +400,20 @@ class ParallelExecutionEngine:
                     label = "HOLD"
                     
                 # 4. Save to closed_trades DB
+                resolved_symbol = "UNKNOWN"
+                if self.token_info_service:
+                    try:
+                        token_info = await self.token_info_service.get_token_info(self.position.token_address)
+                        if token_info and "token_symbol" in token_info:
+                            resolved_symbol = token_info["token_symbol"]
+                    except Exception as sym_err:
+                        logger.warning(f"[PROTECTION] Could not fetch real token symbol: {sym_err}")
+                
                 closed_trade = ClosedTrade(
                     trade_id=f"tr_{uuid.uuid4().hex[:8]}",
                     wallet_source=self.position.wallet_source,
                     token_address=self.position.token_address,
-                    token_symbol="SIM_TOKEN",
+                    token_symbol=resolved_symbol,
                     signal_ts=self.position.entry_ts or datetime.now(timezone.utc),
                     entry_ts=self.position.entry_ts or datetime.now(timezone.utc),
                     exit_ts=datetime.now(timezone.utc),
@@ -420,7 +429,7 @@ class ParallelExecutionEngine:
                     label=label,
                     holding_time_minutes=int(max(1.0, (datetime.now(timezone.utc) - (self.position.entry_ts or datetime.now(timezone.utc))).total_seconds() / 60.0)),
                     exit_reason=reason,
-                    is_paper_trade=True,
+                    is_paper_trade=not (keypair is not None),
                     is_bootstrap=False,
                     model_version=self.position.model_version
                 )
