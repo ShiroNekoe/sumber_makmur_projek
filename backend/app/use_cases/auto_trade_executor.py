@@ -90,43 +90,81 @@ class AutoTradeExecutor:
                 logger.warning(f"[AUTO TRADE] [BLOCKED] Active position already exists for ({wallet_source}, {token_address})")
                 return None
             
-            # 2. Sizing: 1% risk per trade
-            # Position Size USD = (Equity * Risk Pct) / Distance to SL (in Pct)
-            # Default equity = 10000.0 USD
-            equity = 10000.0 
-            risk_pct = settings.RISK_PCT_PER_TRADE
-            sl_distance_pct = 0.10 # default 10% distance to SL
-            
-            position_size_usd = (equity * risk_pct) / sl_distance_pct
-            
-            # Guard against exceeding max position size limit
-            max_pos_size = getattr(settings, "RISK_MAX_POSITION_SIZE_USD", 5000.0)
-            if position_size_usd > max_pos_size:
-                position_size_usd = max_pos_size
-                
-            logger.info(f"[AUTO TRADE] Sizing check: equity=${equity}, risk={risk_pct:.1%}, sl_dist={sl_distance_pct:.1%}. Target size: ${position_size_usd:.2f}")
-            
-            # 3. Load Wallet Keypair & Validate Trade
+            # 2. Load Wallet Keypair & Live SOL Price (sebelum sizing)
+            import sys
             from app.infrastructure.blockchain.wallet_manager import load_wallet_from_env, get_sol_balance
             from app.use_cases.trade_guard import TradeGuard
-            
+
             keypair = load_wallet_from_env()
+            is_testing = ("pytest" in sys.modules or "unittest" in sys.modules)
+
+            # Ambil harga SOL live dari DexScreener
             sol_price_usd = 150.0
             if self.token_info_service:
                 try:
                     sol_info = await self.token_info_service.get_token_info("So11111111111111111111111111111111111111112")
-                    if sol_info and "price_usd" in sol_info:
+                    if sol_info and "price_usd" in sol_info and sol_info["price_usd"] > 0:
                         sol_price_usd = sol_info["price_usd"]
                 except Exception:
                     pass
 
-            import sys
-            is_testing = ("pytest" in sys.modules or "unittest" in sys.modules)
-            
-            sol_balance = 100.0 if is_testing else 2.5 # Mock/default SOL balance if keypair is absent (paper-trading)
-            if keypair and not is_testing:
+            # Ambil saldo SOL real dari RPC (atau mock untuk testing/paper)
+            if is_testing:
+                sol_balance = 100.0
+            elif keypair:
                 sol_balance = await get_sol_balance(keypair.pubkey())
-                
+                logger.info(f"[AUTO TRADE] Wallet balance: {sol_balance:.6f} SOL (${sol_balance * sol_price_usd:.2f} USD at ${sol_price_usd:.2f}/SOL)")
+            else:
+                sol_balance = 0.0
+                logger.warning("[AUTO TRADE] No keypair loaded — paper trading mode, sol_balance=0")
+
+            # 3. Sizing: 1% risk per trade sesuai dokumentasi F-08
+            # Position Size USD = (Equity * Risk Pct) / SL Distance Pct
+            # Equity = nilai total wallet dalam USD (real SOL balance)
+            risk_pct = settings.RISK_PCT_PER_TRADE
+            sl_distance_pct = 0.10  # 10% jarak Stop Loss (default)
+
+            # Equity dihitung dari saldo SOL nyata, bukan hardcoded
+            # Untuk paper trading (tanpa keypair), gunakan virtual equity $10,000
+            if keypair and not is_testing:
+                equity = sol_balance * sol_price_usd
+            else:
+                equity = 10000.0  # virtual equity untuk paper trading
+
+            position_size_usd = (equity * risk_pct) / sl_distance_pct
+
+            # Minimum position size: 0.009 SOL (swap 0.005 + fee 0.003 + buffer 0.001)
+            # agar transaksi on-chain bisa masuk jaringan
+            min_position_sol = 0.009
+            min_position_usd = min_position_sol * sol_price_usd
+            if position_size_usd < min_position_usd:
+                logger.warning(
+                    f"[AUTO TRADE] Calculated position ${position_size_usd:.4f} di bawah minimum "
+                    f"${min_position_usd:.4f} ({min_position_sol} SOL). Menggunakan minimum."
+                )
+                position_size_usd = min_position_usd
+
+            # Guard: jangan melebihi max position size limit
+            max_pos_size = getattr(settings, "RISK_MAX_POSITION_SIZE_USD", 5000.0)
+            if position_size_usd > max_pos_size:
+                position_size_usd = max_pos_size
+
+            logger.info(
+                f"[AUTO TRADE] Sizing: equity=${equity:.2f} | risk={risk_pct:.1%} | "
+                f"sl_dist={sl_distance_pct:.1%} | position_size=${position_size_usd:.4f} USD "
+                f"({position_size_usd / sol_price_usd:.6f} SOL)"
+            )
+
+            # Validasi saldo cukup sebelum lanjut (fail-fast)
+            required_sol = (position_size_usd / sol_price_usd) + 0.003 + 0.001  # swap + fee + buffer
+            if not is_testing and keypair and sol_balance < required_sol:
+                logger.error(
+                    f"[AUTO TRADE] [BLOCKED] Saldo tidak cukup. "
+                    f"Dibutuhkan: {required_sol:.6f} SOL, Tersedia: {sol_balance:.6f} SOL. "
+                    f"Top up wallet {str(keypair.pubkey())[:8]}... untuk melanjutkan."
+                )
+                return None
+
             # Perform strict validation checks via TradeGuard
             guard = TradeGuard(self.position_repo, self.cooldown_repo)
             allowed, reason = await guard.validate_trade(
@@ -136,7 +174,7 @@ class AutoTradeExecutor:
                 position_size_usd=position_size_usd,
                 sol_price_usd=sol_price_usd
             )
-            
+
             if not allowed:
                 logger.warning(f"[AUTO TRADE] [BLOCKED] {reason}")
                 return None
@@ -161,9 +199,6 @@ class AutoTradeExecutor:
                             
                         amount_sol = round(position_size_usd / sol_price_usd, 4)
                         amount_sol = max(amount_sol, 0.005)
-                        
-                        import sys
-                        is_testing = ("pytest" in sys.modules or "unittest" in sys.modules)
                         
                         if keypair and not is_testing:
                             # Local Sign & Broadcast via PumpPortal Local API
