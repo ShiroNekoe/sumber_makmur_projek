@@ -33,8 +33,8 @@ class PnLCalculator:
 
     async def calculate_realized_pnl(self) -> float:
         """
-        Calculates total realized PnL in USD from REAL (non-bootstrap) closed trades only.
-        Bootstrap trades are simulation data and must never contribute to portfolio PnL.
+        Calculates total realized PnL in USD from REAL (non-bootstrap, non-paper) closed trades only.
+        Bootstrap and paper trades are simulation data and must never contribute to portfolio PnL.
         """
         try:
             # Access the db session directly to avoid the per-call limit
@@ -45,12 +45,13 @@ class PnLCalculator:
                     ClosedTradeORM.position_size_usd,
                     ClosedTradeORM.pnl_pct_actual
                 ).filter(
-                    (ClosedTradeORM.is_bootstrap == False) | (ClosedTradeORM.is_bootstrap == None)
+                    (ClosedTradeORM.is_bootstrap == False) | (ClosedTradeORM.is_bootstrap == None),
+                    (ClosedTradeORM.is_paper_trade == False) | (ClosedTradeORM.is_paper_trade == None)
                 ).all()
                 return sum(r.position_size_usd * r.pnl_pct_actual for r in rows)
-            # Fallback: use interface (exclude bootstrap)
+            # Fallback: use interface (exclude bootstrap and paper trades)
             closed_trades = await self.trade_history_repo.get_closed_trades(limit=1000, exclude_bootstrap=True)
-            return sum(t.position_size_usd * t.pnl_pct_actual for t in closed_trades)
+            return sum(t.position_size_usd * t.pnl_pct_actual for t in closed_trades if not t.is_paper_trade)
         except Exception as e:
             logger.error(f"[PNL CALCULATOR] Failed to calculate realized PnL: {e}")
             return 0.0

@@ -383,10 +383,10 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         if not parsed_event:
             return
             
-        # 3. Validate timestamp (must not be older than 60s)
+        # 3. Validate timestamp (must not be older than 300s/5m to tolerate RPC delays & clock desyncs)
         now_ts = datetime.now(timezone.utc).timestamp()
         event_ts = parsed_event["timestamp_utc"].timestamp()
-        if abs(now_ts - event_ts) > 60.0:
+        if abs(now_ts - event_ts) > 300.0:
             logger.warning(f"Skipping event {signature}: timestamp offset too high ({abs(now_ts - event_ts):.1f}s)")
             return
             
