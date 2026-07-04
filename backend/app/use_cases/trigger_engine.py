@@ -120,8 +120,8 @@ class TriggerEngine(ITriggerEngine):
                     confidence_boost=confidence_boost
                 )
                 
-                # 5. Set Cooldown for this wallet/token pair
-                await self._set_cooldown(wallet_address, token_mint)
+                # 5. Set Cooldown for this wallet/token pair using the event timestamp
+                await self._set_cooldown(wallet_address, token_mint, timestamp=timestamp)
 
     async def _check_cooldown(self, wallet_address: str, token_mint: str) -> tuple[bool, bool]:
         """
@@ -182,12 +182,15 @@ class TriggerEngine(ITriggerEngine):
 
         return True
 
-    async def _set_cooldown(self, wallet_address: str, token_mint: str) -> None:
+    async def _set_cooldown(self, wallet_address: str, token_mint: str, timestamp: Optional[datetime] = None) -> None:
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc)
         cooldown = CooldownState(
             wallet_address=wallet_address,
             token_address=token_mint,
-            last_trigger_ts=datetime.now(timezone.utc),
+            last_trigger_ts=timestamp,
             active_position_id=None
         )
         await self.cooldown_repo.set_cooldown(cooldown)
         logger.info(f"[TRIGGER ENGINE] Cooldown initialized for ({wallet_address}, {token_mint}).")
+
