@@ -1,7 +1,13 @@
+import asyncio
+import functools
+import logging
+import random
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
+from app.infrastructure.database.session import db_lock
 from app.domain.models import (
     WatchlistWallet,
     OpenPosition,
@@ -37,6 +43,65 @@ from app.infrastructure.database.models import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
+def db_locked(func):
+    """
+    Every repository below shares ONE SQLAlchemy Session with every other
+    background task in the app (see infrastructure/database/session.py for
+    why). This decorator serializes all access to that Session behind a
+    single asyncio.Lock so two tasks can never touch it at the same time --
+    that interleaving, not just raw SQLite contention, is what was producing
+    both "database is locked" and the PendingRollbackError cascade that
+    followed it.
+    """
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        async with db_lock:
+            return await func(*args, **kwargs)
+    return wrapper
+
+
+def retry_on_db_locked(max_retries: int = 5, base_delay: float = 0.15):
+    """
+    Applied on top of @db_locked on write methods only. Retries the WHOLE
+    method (query + mutate + commit), never just the commit() call itself --
+    retrying only commit() was tried before and risked silently losing a
+    write if part of the operation had already taken effect. Retrying the
+    full method is safe here because a failed commit means nothing was
+    durably written, so re-running it from scratch is not a duplicate.
+    This only ever fires for genuinely external contention (e.g. a script
+    run manually against the same .db file), since db_locked already
+    removes contention between the app's own tasks.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            last_exc = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(self, *args, **kwargs)
+                except OperationalError as e:
+                    if "database is locked" not in str(e).lower():
+                        raise
+                    last_exc = e
+                    try:
+                        self.db.rollback()
+                    except Exception:
+                        pass
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, base_delay)
+                    logger.warning(
+                        f"[DB LOCKED] {func.__qualname__} attempt {attempt + 1}/{max_retries} "
+                        f"hit 'database is locked', retrying in {delay:.2f}s..."
+                    )
+                    await asyncio.sleep(delay)
+            logger.error(f"[DB LOCKED] {func.__qualname__} exhausted {max_retries} retries.")
+            raise last_exc
+        return wrapper
+    return decorator
+
+
 class SQLAlchemyWalletRepository(IWalletRepository):
     def __init__(self, db: Session):
         self.db = db
@@ -51,18 +116,23 @@ class SQLAlchemyWalletRepository(IWalletRepository):
             status=getattr(orm, "status", "pending")
         )
 
+    @db_locked
     async def get_all_wallets(self) -> List[WatchlistWallet]:
         orms = self.db.query(WatchlistWalletORM).all()
         return [self._to_domain(o) for o in orms]
 
+    @db_locked
     async def get_active_wallets(self) -> List[WatchlistWallet]:
         orms = self.db.query(WatchlistWalletORM).filter(WatchlistWalletORM.active == True).all()
         return [self._to_domain(o) for o in orms]
 
+    @db_locked
     async def get_wallet(self, wallet_address: str) -> Optional[WatchlistWallet]:
         orm = self.db.query(WatchlistWalletORM).filter(WatchlistWalletORM.wallet_address == wallet_address).first()
         return self._to_domain(orm) if orm else None
 
+    @retry_on_db_locked()
+    @db_locked
     async def add_wallet(self, wallet: WatchlistWallet) -> None:
         orm = WatchlistWalletORM(
             wallet_address=wallet.wallet_address,
@@ -75,6 +145,8 @@ class SQLAlchemyWalletRepository(IWalletRepository):
         self.db.add(orm)
         self.db.commit()
 
+    @retry_on_db_locked()
+    @db_locked
     async def update_wallet(self, wallet: WatchlistWallet) -> None:
         orm = self.db.query(WatchlistWalletORM).filter(WatchlistWalletORM.wallet_address == wallet.wallet_address).first()
         if orm:
@@ -108,14 +180,18 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             model_version=orm.model_version
         )
 
+    @db_locked
     async def get_open_positions(self) -> List[OpenPosition]:
         orms = self.db.query(OpenPositionORM).filter(OpenPositionORM.state.in_(["OPEN", "PENDING_ENTRY", "EXITING"])).all()
         return [self._to_domain(o) for o in orms]
 
+    @db_locked
     async def get_position(self, position_id: str) -> Optional[OpenPosition]:
         orm = self.db.query(OpenPositionORM).filter(OpenPositionORM.position_id == position_id).first()
         return self._to_domain(orm) if orm else None
 
+    @retry_on_db_locked()
+    @db_locked
     async def add_position(self, position: OpenPosition) -> None:
         orm = OpenPositionORM(
             position_id=position.position_id,
@@ -136,6 +212,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
         self.db.add(orm)
         self.db.commit()
 
+    @retry_on_db_locked()
+    @db_locked
     async def update_position(self, position: OpenPosition) -> None:
         orm = self.db.query(OpenPositionORM).filter(OpenPositionORM.position_id == position.position_id).first()
         if orm:
@@ -152,6 +230,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             orm.model_version = position.model_version
             self.db.commit()
 
+    @retry_on_db_locked()
+    @db_locked
     async def delete_position(self, position_id: str) -> None:
         orm = self.db.query(OpenPositionORM).filter(OpenPositionORM.position_id == position_id).first()
         if orm:
@@ -189,6 +269,7 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
             model_version=orm.model_version
         )
 
+    @db_locked
     async def get_closed_trades(self, limit: int = 100, offset: int = 0, exclude_bootstrap: bool = False) -> List[ClosedTrade]:
         query = self.db.query(ClosedTradeORM)
         if exclude_bootstrap:
@@ -196,12 +277,15 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
         orms = query.order_by(ClosedTradeORM.exit_ts.desc()).limit(limit).offset(offset).all()
         return [self._to_domain(o) for o in orms]
 
+    @db_locked
     async def get_closed_trades_count(self, exclude_bootstrap: bool = False) -> int:
         query = self.db.query(ClosedTradeORM)
         if exclude_bootstrap:
             query = query.filter((ClosedTradeORM.is_bootstrap == False) | (ClosedTradeORM.is_bootstrap == None))
         return query.count()
 
+    @retry_on_db_locked()
+    @db_locked
     async def add_closed_trade(self, trade: ClosedTrade) -> None:
         orm = ClosedTradeORM(
             trade_id=trade.trade_id,
@@ -246,10 +330,13 @@ class SQLAlchemyModelRegistryRepository(IModelRegistryRepository):
             rolled_back=orm.rolled_back
         )
 
+    @db_locked
     async def get_active_model(self) -> Optional[ModelRegistry]:
         orm = self.db.query(ModelRegistryORM).filter(ModelRegistryORM.is_active == True).first()
         return self._to_domain(orm) if orm else None
 
+    @retry_on_db_locked()
+    @db_locked
     async def add_model_version(self, model: ModelRegistry) -> None:
         orm = ModelRegistryORM(
             model_version=model.model_version,
@@ -263,6 +350,8 @@ class SQLAlchemyModelRegistryRepository(IModelRegistryRepository):
         self.db.add(orm)
         self.db.commit()
 
+    @retry_on_db_locked()
+    @db_locked
     async def update_model_version(self, model: ModelRegistry) -> None:
         orm = self.db.query(ModelRegistryORM).filter(ModelRegistryORM.model_version == model.model_version).first()
         if orm:
@@ -272,6 +361,7 @@ class SQLAlchemyModelRegistryRepository(IModelRegistryRepository):
             orm.expectancy_r = model.expectancy_r
             self.db.commit()
 
+    @db_locked
     async def get_model_version(self, model_version: str) -> Optional[ModelRegistry]:
         orm = self.db.query(ModelRegistryORM).filter(ModelRegistryORM.model_version == model_version).first()
         return self._to_domain(orm) if orm else None
@@ -289,6 +379,7 @@ class SQLAlchemyCooldownRepository(ICooldownRepository):
             active_position_id=orm.active_position_id
         )
 
+    @db_locked
     async def get_cooldown(self, wallet_address: str, token_address: str) -> Optional[CooldownState]:
         orm = self.db.query(CooldownStateORM).filter(
             CooldownStateORM.wallet_address == wallet_address,
@@ -296,6 +387,8 @@ class SQLAlchemyCooldownRepository(ICooldownRepository):
         ).first()
         return self._to_domain(orm) if orm else None
 
+    @retry_on_db_locked()
+    @db_locked
     async def set_cooldown(self, cooldown: CooldownState) -> None:
         orm = self.db.query(CooldownStateORM).filter(
             CooldownStateORM.wallet_address == cooldown.wallet_address,
@@ -314,6 +407,8 @@ class SQLAlchemyCooldownRepository(ICooldownRepository):
             self.db.add(orm)
         self.db.commit()
 
+    @retry_on_db_locked()
+    @db_locked
     async def delete_cooldown(self, wallet_address: str, token_address: str) -> None:
         orm = self.db.query(CooldownStateORM).filter(
             CooldownStateORM.wallet_address == wallet_address,
@@ -328,6 +423,8 @@ class SQLAlchemyOnchainEventRepository(IOnchainEventRepository):
     def __init__(self, db: Session):
         self.db = db
 
+    @retry_on_db_locked()
+    @db_locked
     async def add_event(self, event: OnchainEvent) -> None:
         orm = OnchainEventORM(
             event_id=event.event_id,
@@ -358,6 +455,8 @@ class SQLAlchemyFilterLogRepository(IFilterLogRepository):
             timestamp=orm.timestamp
         )
 
+    @retry_on_db_locked()
+    @db_locked
     async def add_log(self, log: FilterAuditLog) -> None:
         orm = FilterAuditLogORM(
             log_id=log.log_id,
@@ -373,6 +472,7 @@ class SQLAlchemyFilterLogRepository(IFilterLogRepository):
         self.db.add(orm)
         self.db.commit()
 
+    @db_locked
     async def get_logs(self, limit: int = 100) -> List[FilterAuditLog]:
         orms = self.db.query(FilterAuditLogORM).order_by(FilterAuditLogORM.timestamp.desc()).limit(limit).all()
         return [self._to_domain(o) for o in orms]
@@ -393,6 +493,8 @@ class SQLAlchemyHardFilterLogRepository(IHardFilterLogRepository):
             timestamp=orm.timestamp
         )
 
+    @retry_on_db_locked()
+    @db_locked
     async def add_hard_filter_log(self, log: HardFilterAuditLog) -> None:
         orm = HardFilterAuditLogORM(
             log_id=log.log_id,
@@ -406,6 +508,7 @@ class SQLAlchemyHardFilterLogRepository(IHardFilterLogRepository):
         self.db.add(orm)
         self.db.commit()
 
+    @db_locked
     async def get_hard_filter_logs(self, limit: int = 100) -> List[HardFilterAuditLog]:
         orms = self.db.query(HardFilterAuditLogORM).order_by(HardFilterAuditLogORM.timestamp.desc()).limit(limit).all()
         return [self._to_domain(o) for o in orms]
@@ -426,6 +529,8 @@ class SQLAlchemyErrorLogRepository(IErrorLogRepository):
             resolution_status=orm.resolution_status
         )
 
+    @retry_on_db_locked()
+    @db_locked
     async def log_error(self, error_log: SystemErrorLog) -> None:
         orm = SystemErrorLogORM(
             log_id=error_log.log_id,
@@ -439,7 +544,7 @@ class SQLAlchemyErrorLogRepository(IErrorLogRepository):
         self.db.add(orm)
         self.db.commit()
 
+    @db_locked
     async def get_error_logs(self, limit: int = 100) -> List[SystemErrorLog]:
         orms = self.db.query(SystemErrorLogORM).order_by(SystemErrorLogORM.timestamp.desc()).limit(limit).all()
         return [self._to_domain(o) for o in orms]
-

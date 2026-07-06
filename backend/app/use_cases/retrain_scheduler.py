@@ -53,41 +53,69 @@ class RetrainScheduler:
             if time_since_train < timedelta(hours=24):
                 logger.info(f"[RETRAIN] Active model {active_model.model_version} was trained {time_since_train.total_seconds()/3600:.1f} hours ago. Retraining skipped.")
                 return False
-                
-        # Run retraining in a background executor to prevent blocking FastAPI event loop
-        loop = asyncio.get_running_loop()
-        success = await loop.run_in_executor(None, self._sync_retrain)
-        
-        if success:
-            # Hot-reload inference engine
-            # Clear cached model so it reloads active model on next prediction
-            if hasattr(self.inference_engine, "model"):
-                self.inference_engine.model = None
-                self.inference_engine.current_model_version = None
-                logger.info("[RETRAIN] Inference engine model hot-reload triggered successfully.")
-                
-            # Broadcast retrain complete event
-            await ws_manager.broadcast({
-                "event": "model_updated",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
-            
-        return success
 
-    def _sync_retrain(self) -> bool:
+        # Fetch training data on the main event loop. All async DB access (and db_lock,
+        # which is bound to this loop) must happen here, not inside the worker thread below.
+        trades: List[ClosedTrade] = await self.trade_history_repo.get_closed_trades(limit=1000)
+
+        # Run CPU-bound training (pandas/numpy/xgboost only, no DB/event-loop access)
+        # in a background executor to prevent blocking the FastAPI event loop
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, self._sync_retrain, trades, active_model)
+
+        if result is None:
+            return False
+
+        try:
+            await self.model_registry_repo.add_model_version(result["registry_entry"])
+
+            if result["rollback"]:
+                logger.warning(f"[RETRAIN] New model version {result['new_version']} registered as ROLLED_BACK. Keeping older model active.")
+                await ws_manager.broadcast({
+                    "event": "rollback_alert",
+                    "model_version": result["new_version"],
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+                return False
+
+            if active_model:
+                active_model.is_active = False
+                await self.model_registry_repo.update_model_version(active_model)
+            logger.info(f"[RETRAIN] New model version {result['new_version']} ACTIVATED and saved to disk.")
+        except Exception as e:
+            logger.error(f"[RETRAIN] Error persisting retrain result: {e}", exc_info=True)
+            return False
+
+        # Hot-reload inference engine
+        # Clear cached model so it reloads active model on next prediction
+        if hasattr(self.inference_engine, "model"):
+            self.inference_engine.model = None
+            self.inference_engine.current_model_version = None
+            logger.info("[RETRAIN] Inference engine model hot-reload triggered successfully.")
+                
+        # Broadcast retrain complete event
+        await ws_manager.broadcast({
+            "event": "model_updated",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+            
+        return True
+
+    def _sync_retrain(self, trades: List[ClosedTrade], active_model: Optional[ModelRegistry]) -> Optional[dict]:
         """
-        Synchronous retraining steps run inside a worker thread.
+        Synchronous, CPU-bound retraining steps run inside a worker thread.
+
+        Pure computation only (pandas/numpy/xgboost + local model file I/O). No async
+        DB or WebSocket calls happen here: asyncio primitives created on the main loop
+        (like db_lock) cannot be used from a different event loop running in this
+        worker thread, so all DB persistence happens back in retrain_model_if_needed()
+        on the main loop once this function returns.
+
+        Returns:
+            None if retraining was skipped (insufficient data) or failed.
+            Otherwise a dict with keys: registry_entry, new_version, rollback.
         """
         try:
-            # Run async queries synchronously inside thread loop
-            import asyncio as sync_asyncio
-            temp_loop = sync_asyncio.new_event_loop()
-            
-            # Fetch closed trades
-            trades: List[ClosedTrade] = temp_loop.run_until_complete(
-                self.trade_history_repo.get_closed_trades(limit=1000)
-            )
-            
             # 1. Filter: rolling 30 days and exit_reason NOT LIKE 'kill_switch%'
             cutoff = datetime.now(timezone.utc) - timedelta(days=settings.RETRAIN_ROLLING_WINDOW_DAYS)
             
@@ -117,7 +145,7 @@ class RetrainScheduler:
                     f"Required: {min_first} total, or {min_alt} total with {min_buy_alt} BUY_BENAR. "
                     f"Actual: {n_samples} total, {buy_benar_count} BUY_BENAR."
                 )
-                return False
+                return None
                 
             # 3. Labeling and Feature Matrix Construction
             labels = []
@@ -221,12 +249,7 @@ class RetrainScheduler:
                 
             logger.info(f"[RETRAIN] Retraining finished. Val Accuracy: {val_accuracy:.2%}, Expectancy: {expectancy_r:.2f}R")
             
-            # 6. Rollback Guard Check
-            # Fetch current active model stats
-            active_model = temp_loop.run_until_complete(
-                self.model_registry_repo.get_active_model()
-            )
-            
+            # 6. Rollback Guard Check (against the active-model snapshot fetched on the main loop)
             rollback = False
             if active_model:
                 accuracy_drop = active_model.validation_accuracy - val_accuracy
@@ -237,14 +260,13 @@ class RetrainScheduler:
                     logger.warning(f"[RETRAIN] [ROLLBACK TRIGGERED] Expectancy {expectancy_r:.2f} is negative.")
                     rollback = True
                     
-            # 7. Save and Register
+            # 7. Save model to disk and prepare registry entry (DB write happens on the main loop)
             new_version = f"v{int(datetime.now(timezone.utc).timestamp())}"
             filepath = os.path.join(self.models_dir, f"{new_version}.json")
             os.makedirs(self.models_dir, exist_ok=True)
             
             model.save_model(filepath)
             
-            # Prepare model registry database entry
             registry_entry = ModelRegistry(
                 model_version=new_version,
                 trained_at=datetime.now(timezone.utc),
@@ -254,34 +276,13 @@ class RetrainScheduler:
                 is_active=not rollback,
                 rolled_back=rollback
             )
-            
-            temp_loop.run_until_complete(
-                self.model_registry_repo.add_model_version(registry_entry)
-            )
-            
-            if rollback:
-                logger.warning(f"[RETRAIN] New model version {new_version} registered as ROLLED_BACK. Keeping older model active.")
-                # Emit rollback alert to dashboard via WS
-                temp_loop.run_until_complete(
-                    ws_manager.broadcast({
-                        "event": "rollback_alert",
-                        "model_version": new_version,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    })
-                )
-                return False
-            else:
-                # Deactivate older models
-                if active_model:
-                    active_model.is_active = False
-                    temp_loop.run_until_complete(
-                        self.model_registry_repo.update_model_version(active_model)
-                    )
-                logger.info(f"[RETRAIN] New model version {new_version} ACTIVATED and saved to disk.")
-                return True
-                
+
+            return {
+                "registry_entry": registry_entry,
+                "new_version": new_version,
+                "rollback": rollback
+            }
+
         except Exception as e:
             logger.error(f"[RETRAIN] Error in retraining scheduler: {e}", exc_info=True)
-            return False
-        finally:
-            temp_loop.close()
+            return None

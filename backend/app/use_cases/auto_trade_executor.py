@@ -111,25 +111,20 @@ class AutoTradeExecutor:
             # Ambil saldo SOL real dari RPC (atau mock untuk testing/paper)
             if is_testing:
                 sol_balance = 100.0
+                equity = 10000.0
             elif keypair:
                 sol_balance = await get_sol_balance(keypair.pubkey())
                 logger.info(f"[AUTO TRADE] Wallet balance: {sol_balance:.6f} SOL (${sol_balance * sol_price_usd:.2f} USD at ${sol_price_usd:.2f}/SOL)")
+                equity = sol_balance * sol_price_usd
             else:
-                sol_balance = 0.0
-                logger.warning("[AUTO TRADE] No keypair loaded — paper trading mode, sol_balance=0")
+                logger.error("[AUTO TRADE] [BLOCKED] SOLANA_WALLET_PRIVATE_KEY is missing or invalid in live environment! Running in live mode requires a valid keypair.")
+                return None
 
             # 3. Sizing: 1% risk per trade sesuai dokumentasi F-08
             # Position Size USD = (Equity * Risk Pct) / SL Distance Pct
             # Equity = nilai total wallet dalam USD (real SOL balance)
             risk_pct = settings.RISK_PCT_PER_TRADE
             sl_distance_pct = 0.10  # 10% jarak Stop Loss (default)
-
-            # Equity dihitung dari saldo SOL nyata, bukan hardcoded
-            # Untuk paper trading (tanpa keypair), gunakan virtual equity $10,000
-            if keypair and not is_testing:
-                equity = sol_balance * sol_price_usd
-            else:
-                equity = 10000.0  # virtual equity untuk paper trading
 
             position_size_usd = (equity * risk_pct) / sl_distance_pct
 
@@ -200,26 +195,8 @@ class AutoTradeExecutor:
                         amount_sol = round(position_size_usd / sol_price_usd, 4)
                         amount_sol = max(amount_sol, 0.005)
                         
-                        if keypair and not is_testing:
-                            # Local Sign & Broadcast via PumpPortal Local API
-                            from app.infrastructure.blockchain.pumpportal_client import build_trade_transaction
-                            from app.infrastructure.blockchain.tx_signer import sign_and_broadcast_transaction
-                            
-                            logger.info(f"[AUTO TRADE] Fetching unsigned TX from PumpPortal (Attempt {attempt+1})...")
-                            unsigned_tx = await build_trade_transaction(
-                                public_key=str(keypair.pubkey()),
-                                action="buy",
-                                token_mint=token_address,
-                                amount=amount_sol,
-                                denominated_in_sol=True,
-                                slippage=5.0,
-                                priority_fee=0.003
-                            )
-                            
-                            logger.info(f"[AUTO TRADE] Signing and broadcasting TX locally (Attempt {attempt+1})...")
-                            tx_sig = await sign_and_broadcast_transaction(unsigned_tx, keypair)
-                        else:
-                            # Paper trade fallback
+                        if is_testing:
+                            # Paper trade fallback untuk testing
                             from app.infrastructure.blockchain.trading_service import execute_pumpportal_swap
                             tx_sig = await execute_pumpportal_swap(
                                 action="buy",
@@ -228,6 +205,38 @@ class AutoTradeExecutor:
                                 denominated_in_sol=True,
                                 slippage=5.0
                             )
+                        elif keypair:
+                            # Eksekusi riil on-chain dengan local signing & broadcast
+                            from app.infrastructure.blockchain.pumpportal_client import build_trade_transaction
+                            from app.infrastructure.blockchain.tx_signer import sign_and_broadcast_transaction
+                            
+                            # Tentukan pool secara dinamis (raydium/pump-amm vs pump bonding curve)
+                            pool_to_use = "pump"
+                            if self.token_info_service:
+                                try:
+                                    token_info = await self.token_info_service.get_token_info(token_address)
+                                    if token_info:
+                                        pool_to_use = "pump-amm"  # token has migrated
+                                except Exception:
+                                    pass
+                                    
+                            logger.info(f"[AUTO TRADE] Fetching unsigned TX from PumpPortal for pool '{pool_to_use}' (Attempt {attempt+1})...")
+                            unsigned_tx = await build_trade_transaction(
+                                public_key=str(keypair.pubkey()),
+                                action="buy",
+                                token_mint=token_address,
+                                amount=amount_sol,
+                                denominated_in_sol=True,
+                                slippage=5.0,
+                                priority_fee=0.003,
+                                pool=pool_to_use
+                            )
+                            
+                            logger.info(f"[AUTO TRADE] Signing and broadcasting TX locally (Attempt {attempt+1})...")
+                            tx_sig = await sign_and_broadcast_transaction(unsigned_tx, keypair)
+                        else:
+                            # Keypair is None in live mode
+                            raise ValueError("SOLANA_WALLET_PRIVATE_KEY missing or invalid for live trading!")
                         
                         logger.info(f"[AUTO TRADE] Order completed on pump.fun. TX: {tx_sig}")
                         order_success = True

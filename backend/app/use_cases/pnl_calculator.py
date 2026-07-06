@@ -557,42 +557,53 @@ class PnLCalculator:
             trigger_reason: Description of what triggered this snapshot
         
         Returns:
-            True if snapshot was recorded, False if DB session not available
+            True if snapshot was recorded, False on failure
+
+        Note:
+            Uses a short-lived, dedicated Session (opened, committed, closed within
+            this call) instead of the long-lived shared `self.db` session. The shared
+            session is held open for the entire app lifetime and touched concurrently
+            by many other background tasks (monitor loop, trigger engine, retrain
+            scheduler, etc). Writing through it from here could collide with a
+            transaction another task left open on that same session, producing
+            'database is locked' errors. A dedicated session keeps this write's
+            transaction minimal and isolated, mirroring the pattern already used in
+            app.core.error_handler.log_system_error.
         """
-        if not self.db:
-            logger.debug("[PNL CALCULATOR] DB session not available, skipping equity snapshot")
-            return False
-        
         try:
             from app.infrastructure.database.models import EquitySnapshotORM
+            from app.infrastructure.database.session import SessionLocal
             from datetime import datetime, timezone
             import uuid
-            
-            snapshot = EquitySnapshotORM(
-                snapshot_id=str(uuid.uuid4()),
-                wallet_address=wallet_address,
-                timestamp=datetime.now(timezone.utc),
-                portfolio_value_usd=portfolio_value_usd,
-                sol_balance=sol_balance,
-                sol_price_usd=sol_price_usd,
-                token_holdings_value_usd=token_holdings_value_usd,
-                realized_pnl_usd=realized_pnl_usd,
-                unrealized_pnl_usd=unrealized_pnl_usd,
-                total_pnl_usd=realized_pnl_usd + unrealized_pnl_usd,
-                trigger_type=trigger_type,
-                trigger_reason=trigger_reason,
-                created_at=datetime.now(timezone.utc)
-            )
-            self.db.add(snapshot)
-            self.db.commit()
-            logger.debug(f"[PNL CALCULATOR] Recorded equity snapshot for {wallet_address[:8]}... value=${portfolio_value_usd:.2f}")
-            return True
+
+            session = SessionLocal()
+            try:
+                snapshot = EquitySnapshotORM(
+                    snapshot_id=str(uuid.uuid4()),
+                    wallet_address=wallet_address,
+                    timestamp=datetime.now(timezone.utc),
+                    portfolio_value_usd=portfolio_value_usd,
+                    sol_balance=sol_balance,
+                    sol_price_usd=sol_price_usd,
+                    token_holdings_value_usd=token_holdings_value_usd,
+                    realized_pnl_usd=realized_pnl_usd,
+                    unrealized_pnl_usd=unrealized_pnl_usd,
+                    total_pnl_usd=realized_pnl_usd + unrealized_pnl_usd,
+                    trigger_type=trigger_type,
+                    trigger_reason=trigger_reason,
+                    created_at=datetime.now(timezone.utc)
+                )
+                session.add(snapshot)
+                session.commit()
+                logger.debug(f"[PNL CALCULATOR] Recorded equity snapshot for {wallet_address[:8]}... value=${portfolio_value_usd:.2f}")
+                return True
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
         except Exception as e:
             logger.error(f"[PNL CALCULATOR] Failed to record equity snapshot: {e}", exc_info=True)
-            try:
-                self.db.rollback()
-            except Exception:
-                pass
             return False
 
     async def get_equity_history(
@@ -662,54 +673,59 @@ class PnLCalculator:
         
         Returns:
             True if snapshot was created or already exists, False if error
+
+        Note:
+            Uses a short-lived, dedicated Session for the same reason as
+            record_equity_snapshot above (avoids contending with the long-lived
+            shared `self.db` session used across background tasks).
         """
-        if not self.db:
-            logger.debug("[PNL CALCULATOR] DB session not available, cannot create initial snapshot")
-            return False
-        
         try:
             from app.infrastructure.database.models import EquitySnapshotORM
-            from datetime import datetime, timezone, timedelta
+            from app.infrastructure.database.session import SessionLocal
+            from datetime import datetime, timezone
             import uuid
-            
-            # Check if wallet already has any snapshots
-            existing = self.db.query(EquitySnapshotORM).filter(
-                EquitySnapshotORM.wallet_address == wallet_address
-            ).first()
-            
-            if existing:
-                logger.debug(f"[PNL CALCULATOR] Wallet {wallet_address[:8]}... already has snapshots")
+
+            session = SessionLocal()
+            try:
+                # Check if wallet already has any snapshots
+                existing = session.query(EquitySnapshotORM).filter(
+                    EquitySnapshotORM.wallet_address == wallet_address
+                ).first()
+
+                if existing:
+                    logger.debug(f"[PNL CALCULATOR] Wallet {wallet_address[:8]}... already has snapshots")
+                    return True
+
+                # Create initial snapshot
+                initial_snapshot = EquitySnapshotORM(
+                    snapshot_id=str(uuid.uuid4()),
+                    wallet_address=wallet_address,
+                    timestamp=datetime.now(timezone.utc),
+                    portfolio_value_usd=portfolio_value_usd,
+                    sol_balance=sol_balance,
+                    sol_price_usd=sol_price_usd,
+                    token_holdings_value_usd=0.0,
+                    realized_pnl_usd=0.0,
+                    unrealized_pnl_usd=0.0,
+                    total_pnl_usd=0.0,
+                    trigger_type="manual",
+                    trigger_reason="initial_wallet_setup",
+                    created_at=datetime.now(timezone.utc)
+                )
+
+                session.add(initial_snapshot)
+                session.commit()
+
+                logger.info(f"[PNL CALCULATOR] Created initial equity snapshot for {wallet_address[:8]}... (value=${portfolio_value_usd:.2f})")
                 return True
-            
-            # Create initial snapshot
-            initial_snapshot = EquitySnapshotORM(
-                snapshot_id=str(uuid.uuid4()),
-                wallet_address=wallet_address,
-                timestamp=datetime.now(timezone.utc),
-                portfolio_value_usd=portfolio_value_usd,
-                sol_balance=sol_balance,
-                sol_price_usd=sol_price_usd,
-                token_holdings_value_usd=0.0,
-                realized_pnl_usd=0.0,
-                unrealized_pnl_usd=0.0,
-                total_pnl_usd=0.0,
-                trigger_type="manual",
-                trigger_reason="initial_wallet_setup",
-                created_at=datetime.now(timezone.utc)
-            )
-            
-            self.db.add(initial_snapshot)
-            self.db.commit()
-            
-            logger.info(f"[PNL CALCULATOR] Created initial equity snapshot for {wallet_address[:8]}... (value=${portfolio_value_usd:.2f})")
-            return True
-            
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
         except Exception as e:
             logger.error(f"[PNL CALCULATOR] Failed to create initial snapshot: {e}", exc_info=True)
-            try:
-                self.db.rollback()
-            except Exception:
-                pass
             return False
 
     async def populate_historical_snapshots_if_empty(self, wallet_address: str):
@@ -726,4 +742,3 @@ class PnLCalculator:
             f"[PNL CALCULATOR] populate_historical_snapshots_if_empty called for "
             f"{wallet_address[:8]}... — skipping, using periodic polling as source of truth."
         )
-

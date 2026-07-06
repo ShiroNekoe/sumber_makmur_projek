@@ -82,11 +82,14 @@ async def sign_and_broadcast_transaction(
             
         # 4. Poll getSignatureStatuses until confirmed
         logger.info(f"[TX SIGNER] Broadcast complete. Polling status for signature: {tx_hash}")
-        confirmed = await poll_signature_status(tx_hash, active_url)
+        confirmed, err_desc = await poll_signature_status(tx_hash, active_url)
         
         if confirmed:
             logger.info(f"[TX SIGNER] Transaction successfully confirmed: {tx_hash}")
             return tx_hash
+        elif err_desc and err_desc != "timeout":
+            logger.error(f"[TX SIGNER] Transaction failed on-chain: {tx_hash} | Error: {err_desc}")
+            raise IOError(f"Transaction failed on-chain: {err_desc}")
         else:
             logger.error(f"[TX SIGNER] Transaction expired or not confirmed: {tx_hash}")
             raise TimeoutError("Transaction confirmation timed out or expired on-chain.")
@@ -94,12 +97,13 @@ async def sign_and_broadcast_transaction(
     except Exception as e:
         logger.error(f"[TX SIGNER] Sign & Broadcast error: {e}", exc_info=True)
         raise e
-
-
-async def poll_signature_status(tx_hash: str, rpc_url: str) -> bool:
+ 
+ 
+async def poll_signature_status(tx_hash: str, rpc_url: str) -> tuple[bool, Optional[str]]:
     """
     Polls getSignatureStatuses for a given transaction hash.
     Timeout after 45 seconds.
+    Returns: (confirmed_bool, error_description_or_none)
     """
     payload = {
         "jsonrpc": "2.0",
@@ -139,12 +143,13 @@ async def poll_signature_status(tx_hash: str, rpc_url: str) -> bool:
         status = value[0]
         # Check transaction error
         if status.get("err"):
-            logger.error(f"[TX SIGNER] Transaction failed with error: {status['err']}")
-            return False
+            err_msg = json.dumps(status.get("err"))
+            logger.error(f"[TX SIGNER] Transaction failed with error: {err_msg}")
+            return False, err_msg
             
         confirmation_status = status.get("confirmationStatus")
         if confirmation_status in ("processed", "confirmed", "finalized"):
             logger.info(f"[TX SIGNER] Confirmed on-chain ({confirmation_status}) at slot {status.get('slot')}")
-            return True
+            return True, None
             
-    return False
+    return False, "timeout"

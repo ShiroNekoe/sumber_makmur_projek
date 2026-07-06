@@ -1,3 +1,4 @@
+import asyncio
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
@@ -8,6 +9,11 @@ engine = create_engine(
     connect_args={"check_same_thread": False}
 )
 
+# Serializes write access across all repositories/background tasks so concurrent
+# asyncio tasks never issue overlapping writes on the single shared SQLite connection.
+# Used by the @db_locked decorator in repository.py (`async with db_lock:`).
+db_lock = asyncio.Lock()
+
 
 # SQLite optimization for production-readiness on limited hardware (avoid locking errors)
 @event.listens_for(engine, "connect")
@@ -16,6 +22,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA journal_mode=WAL")       # Write-Ahead Logging for high concurrency
     cursor.execute("PRAGMA synchronous=NORMAL")     # Faster writes, safe in WAL mode
     cursor.execute("PRAGMA foreign_keys=ON")        # Enable FK constraint enforcement
+    cursor.execute("PRAGMA busy_timeout=30000")     # Wait up to 30s for locks instead of failing immediately (defense-in-depth against external lockers e.g. OneDrive sync)
     cursor.close()
 
 
