@@ -218,7 +218,7 @@ export const useStore = create<AppStore>()((set) => ({
     return { walletCandidates: [...state.walletCandidates, candidate] };
   }),
 
-  approveWalletCandidate: (address, action) => set((state) => ({
+  approveWalletCandidate: (address, _action) => set((state) => ({
     // Remove candidate from list after approve/reject — it should no longer appear in pending list
     walletCandidates: state.walletCandidates.filter(c => c.wallet_address !== address)
   })),

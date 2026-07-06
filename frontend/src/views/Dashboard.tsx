@@ -20,6 +20,8 @@ import {
   AlertOctagon,
   Eye,
   Briefcase,
+  Download,
+  FileText,
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { 
@@ -32,6 +34,7 @@ import {
   fetchSystemErrors,
   fetchDashboardPortfolio,
   fetchActiveWallets,
+  exportPortfolioPdfUrl,
 } from '../services/api'
 
 export const Dashboard: React.FC = () => {
@@ -63,7 +66,6 @@ export const Dashboard: React.FC = () => {
     setSelectedError,
     setErrorLogs,
     addSignal,
-    addTrade,
     setTradeLog,
     setPortfolio,
     activeWallets,
@@ -73,6 +75,11 @@ export const Dashboard: React.FC = () => {
   const [timeframe, setTimeframe] = useState<'1D' | '7D' | '30D' | '180D' | '360D'>('7D');
   const [hoveredPoint, setHoveredPoint] = useState<any | null>(null);
   const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
+  
+  // PDF Report Export States
+  const [pdfStartDate, setPdfStartDate] = useState<string>('');
+  const [pdfEndDate, setPdfEndDate] = useState<string>('');
+  const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
 
   const handleSvgInteraction = (e: React.MouseEvent<SVGSVGElement> | React.TouchEvent<SVGSVGElement>, historyToUse: any[]) => {
     if (!historyToUse || historyToUse.length === 0) return;
@@ -385,10 +392,12 @@ export const Dashboard: React.FC = () => {
             ? hoveredPoint.sol_balance
             : solAmount;
 
-          // Reconstruct paths for SVG
+          // Reconstruct paths for SVG using smooth cubic Bezier curve formulas
           let linePath = "M 50 100 L 550 100";
           let areaPath = "M 50 180 L 50 100 L 550 100 L 550 180 Z";
           let points: { x: number; y: number; val: number; ts: string; sol_balance?: number }[] = [];
+          let highestPoint: any = null;
+          let lowestPoint: any = null;
           
           if (historyToUse.length > 0) {
             const vals = historyToUse.map((h: any) => h.value_usd);
@@ -405,11 +414,33 @@ export const Dashboard: React.FC = () => {
                 : 100;
               return { x, y, val: h.value_usd, ts: h.timestamp, sol_balance: h.sol_balance };
             });
-            
-            linePath = `M ${points[0].x} ${points[0].y} ` + points.slice(1).map((p: any) => `L ${p.x} ${p.y}`).join(' ');
-            areaPath = `M ${points[0].x} 180 L ${points[0].x} ${points[0].y} ` + 
-                       points.slice(1).map((p: any) => `L ${p.x} ${p.y}`).join(' ') + 
-                       ` L ${points[points.length - 1].x} 180 Z`;
+
+            // Find highest & lowest points for Binance-grade labels
+            highestPoint = points[0];
+            lowestPoint = points[0];
+            points.forEach((p: any) => {
+              if (p.val > highestPoint.val) highestPoint = p;
+              if (p.val < lowestPoint.val) lowestPoint = p;
+            });
+
+            // Quadratic Bezier interpolation for extra smooth curves
+            if (points.length > 1) {
+              let lPath = `M ${points[0].x} ${points[0].y}`;
+              for (let i = 0; i < points.length - 1; i++) {
+                const p0 = points[i];
+                const p1 = points[i + 1];
+                const cp1x = p0.x + (p1.x - p0.x) / 3;
+                const cp1y = p0.y;
+                const cp2x = p0.x + 2 * (p1.x - p0.x) / 3;
+                const cp2y = p1.y;
+                lPath += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p1.x} ${p1.y}`;
+              }
+              linePath = lPath;
+              areaPath = `${lPath} L ${points[points.length - 1].x} 180 L ${points[0].x} 180 Z`;
+            } else {
+              linePath = `M 50 ${points[0].y} L 550 ${points[0].y}`;
+              areaPath = `M 50 180 L 50 ${points[0].y} L 550 ${points[0].y} L 550 180 Z`;
+            }
           }
 
           return (
@@ -530,6 +561,39 @@ export const Dashboard: React.FC = () => {
                       strokeWidth="3"
                       className="drop-shadow-[0_0_8px_rgba(129,140,248,0.5)]"
                     />
+
+                    {/* Highest & Lowest Annotations */}
+                    {highestPoint && points.length > 1 && (
+                      <g>
+                        <circle cx={highestPoint.x} cy={highestPoint.y} r="4" fill="#10b981" />
+                        <circle cx={highestPoint.x} cy={highestPoint.y} r="8" fill="none" stroke="#10b981" strokeWidth="1" className="animate-ping" />
+                        <text
+                          x={highestPoint.x}
+                          y={highestPoint.y - 12}
+                          textAnchor="middle"
+                          fill="#10b981"
+                          className="text-[9px] font-mono font-bold fill-cyber-emerald"
+                        >
+                          ▲ ${highestPoint.val.toFixed(2)}
+                        </text>
+                      </g>
+                    )}
+
+                    {lowestPoint && points.length > 1 && lowestPoint.val !== highestPoint.val && (
+                      <g>
+                        <circle cx={lowestPoint.x} cy={lowestPoint.y} r="4" fill="#ef4444" />
+                        <circle cx={lowestPoint.x} cy={lowestPoint.y} r="8" fill="none" stroke="#ef4444" strokeWidth="1" className="animate-ping" />
+                        <text
+                          x={lowestPoint.x}
+                          y={lowestPoint.y + 16}
+                          textAnchor="middle"
+                          fill="#ef4444"
+                          className="text-[9px] font-mono font-bold fill-cyber-rose"
+                        >
+                          ▼ ${lowestPoint.val.toFixed(2)}
+                        </text>
+                      </g>
+                    )}
                     
                     {/* Interactive Scrubbing Dashed Line and Hover Dot */}
                     {hoveredPointIndex !== null && points[hoveredPointIndex] && (
@@ -668,6 +732,147 @@ export const Dashboard: React.FC = () => {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+
+            {/* PDF Report Export Component */}
+            <div className="bg-cyber-card p-6 rounded-xl border border-cyber-border/60 space-y-4">
+              <div className="flex justify-between items-center pb-3 border-b border-cyber-border/40">
+                <div className="flex items-center space-x-2">
+                  <FileText className="w-5 h-5 text-cyber-amber" />
+                  <h3 className="text-sm font-semibold tracking-wider font-mono text-white">TRANSACTION REPORT EXPORT (PDF)</h3>
+                </div>
+                <span className="text-xs text-cyber-textMuted font-mono">EXPORT FILTERED TRANSACTION LOGS</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                {/* Start Date */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-cyber-textMuted font-mono uppercase block">START DATE</label>
+                  <input
+                    type="date"
+                    value={pdfStartDate}
+                    onChange={(e) => setPdfStartDate(e.target.value)}
+                    className="w-full bg-cyber-cardLight border border-cyber-border/60 rounded px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                </div>
+
+                {/* End Date */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-cyber-textMuted font-mono uppercase block">END DATE</label>
+                  <input
+                    type="date"
+                    value={pdfEndDate}
+                    onChange={(e) => setPdfEndDate(e.target.value)}
+                    className="w-full bg-cyber-cardLight border border-cyber-border/60 rounded px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                </div>
+
+                {/* Quick Selection Filters & Export Button */}
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => {
+                      const now = new Date();
+                      setPdfEndDate(now.toISOString().split('T')[0]);
+                      
+                      // Today quick filter
+                      const today = new Date();
+                      setPdfStartDate(today.toISOString().split('T')[0]);
+                    }}
+                    className="flex-1 bg-cyber-cardLight/50 hover:bg-cyber-cardLight border border-cyber-border/40 hover:border-cyber-border text-white text-xs font-mono py-2 rounded transition-all cursor-pointer text-center"
+                  >
+                    TODAY
+                  </button>
+                  <button
+                    onClick={() => {
+                      const now = new Date();
+                      setPdfEndDate(now.toISOString().split('T')[0]);
+                      
+                      // 7 Days Ago
+                      const sevenDaysAgo = new Date();
+                      sevenDaysAgo.setDate(now.getDate() - 7);
+                      setPdfStartDate(sevenDaysAgo.toISOString().split('T')[0]);
+                    }}
+                    className="flex-1 bg-cyber-cardLight/50 hover:bg-cyber-cardLight border border-cyber-border/40 hover:border-cyber-border text-white text-xs font-mono py-2 rounded transition-all cursor-pointer text-center"
+                  >
+                    7D
+                  </button>
+                  <button
+                    onClick={() => {
+                      const now = new Date();
+                      setPdfEndDate(now.toISOString().split('T')[0]);
+                      
+                      // 30 Days Ago
+                      const thirtyDaysAgo = new Date();
+                      thirtyDaysAgo.setDate(now.getDate() - 30);
+                      setPdfStartDate(thirtyDaysAgo.toISOString().split('T')[0]);
+                    }}
+                    className="flex-1 bg-cyber-cardLight/50 hover:bg-cyber-cardLight border border-cyber-border/40 hover:border-cyber-border text-white text-xs font-mono py-2 rounded transition-all cursor-pointer text-center"
+                  >
+                    30D
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPdfStartDate('');
+                      setPdfEndDate('');
+                    }}
+                    className="flex-1 bg-cyber-rose/10 hover:bg-cyber-rose/25 border border-cyber-rose/30 text-cyber-rose text-xs font-mono py-2 rounded transition-all cursor-pointer text-center"
+                  >
+                    RESET
+                  </button>
+                </div>
+              </div>
+
+              {/* Action Export Button */}
+              <div className="flex justify-end pt-2">
+                <button
+                  disabled={isExportingPdf}
+                  onClick={async () => {
+                    try {
+                      setIsExportingPdf(true);
+                      
+                      // Convert local YYYY-MM-DD input date to ISO timestamps
+                      let startIso: string | undefined = undefined;
+                      let endIso: string | undefined = undefined;
+                      
+                      if (pdfStartDate) {
+                        startIso = new Date(pdfStartDate + 'T00:00:00Z').toISOString();
+                      }
+                      if (pdfEndDate) {
+                        endIso = new Date(pdfEndDate + 'T23:59:59Z').toISOString();
+                      }
+                      
+                      const url = exportPortfolioPdfUrl(startIso, endIso);
+                      
+                      // Open PDF in new tab or trigger direct download
+                      window.open(url, '_blank');
+                      
+                      addNotification('Generating transaction report PDF. Check your downloads.', 'info');
+                    } catch (err: any) {
+                      console.error('PDF export failed:', err);
+                      addNotification(`Failed to export PDF: ${err.message || err}`, 'error');
+                    } finally {
+                      setIsExportingPdf(false);
+                    }
+                  }}
+                  className={`flex items-center space-x-2 px-5 py-2.5 rounded-lg text-xs font-bold font-mono tracking-wider transition-all cursor-pointer ${
+                    isExportingPdf
+                      ? 'bg-cyber-cardLight text-cyber-textMuted border border-cyber-border'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-[0_0_15px_rgba(99,102,241,0.4)] hover:shadow-[0_0_20px_rgba(99,102,241,0.6)] border border-indigo-500/50'
+                  }`}
+                >
+                  {isExportingPdf ? (
+                    <>
+                      <RotateCw className="w-4 h-4 animate-spin" />
+                      <span>GENERATING REPORT...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4" />
+                      <span>EXPORT PDF REPORT</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
           </div>

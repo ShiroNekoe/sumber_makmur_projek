@@ -568,7 +568,7 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         """Sends lightweight websocket ping to verify connection health."""
         while self.is_running:
             await asyncio.sleep(30)
-            if self.websocket and self.websocket.open:
+            if self.websocket and not self.websocket.closed:
                 try:
                     pong_waiter = await self.websocket.ping()
                     await asyncio.wait_for(pong_waiter, timeout=5.0)

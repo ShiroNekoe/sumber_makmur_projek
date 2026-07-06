@@ -15,6 +15,18 @@ export const endpoints = {
   dashboardErrors: `${API_BASE_URL}/dashboard/errors`,
   dashboardPortfolio: `${API_BASE_URL}/dashboard/portfolio`,
   dashboardActiveWallets: `${API_BASE_URL}/dashboard/wallets/active`,
+  dashboardExportPdf: `${API_BASE_URL}/dashboard/export/pdf`,
+};
+
+export const exportPortfolioPdfUrl = (startDate?: string, endDate?: string) => {
+  let url = endpoints.dashboardExportPdf;
+  const params = [];
+  if (startDate) params.push(`start_date=${encodeURIComponent(startDate)}`);
+  if (endDate) params.push(`end_date=${encodeURIComponent(endDate)}`);
+  if (params.length > 0) {
+    url += `?${params.join('&')}`;
+  }
+  return url;
 };
 
 export const fetchDashboardPortfolio = async () => {

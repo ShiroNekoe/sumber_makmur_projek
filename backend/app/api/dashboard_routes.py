@@ -448,3 +448,63 @@ async def get_portfolio(request: Request):
     except Exception as e:
         logger.error(f"[DASHBOARD API] /portfolio error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── GET /dashboard/export/pdf ───────────────────────────────────────────────
+
+@router.get("/export/pdf", summary="Export complete transaction and portfolio report as PDF")
+async def export_portfolio_pdf(
+    request: Request,
+    start_date: Optional[str] = Query(default=None, description="Start date filter (ISO format)"),
+    end_date: Optional[str] = Query(default=None, description="End date filter (ISO format)"),
+):
+    """
+    Generates and returns a premium PDF transaction and portfolio report.
+    Filters by start_date and end_date if provided.
+    """
+    try:
+        from fastapi.responses import StreamingResponse
+        from app.services.pdf_generator import generate_portfolio_pdf
+        from app.infrastructure.database.session import SessionLocal
+        
+        parsed_start = None
+        parsed_end = None
+        
+        if start_date:
+            try:
+                parsed_start = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Use ISO format.")
+                
+        if end_date:
+            try:
+                parsed_end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format. Use ISO format.")
+                
+        # Generate the PDF bytes
+        with SessionLocal() as db_session:
+            pdf_bytes = await generate_portfolio_pdf(
+                db_session=db_session,
+                start_date=parsed_start,
+                end_date=parsed_end
+            )
+            
+        filename = f"Sumber_Makmur_Report_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.pdf"
+        
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes) if "io" in globals() else __import__("io").BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] /export/pdf error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
