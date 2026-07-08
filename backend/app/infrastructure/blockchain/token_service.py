@@ -3,6 +3,8 @@ import time
 import json
 import urllib.request
 import asyncio
+import os
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from app.domain.interfaces import ITokenInfoService, ITokenSafetyService
@@ -42,7 +44,8 @@ class SolanaTokenInfoService(ITokenInfoService):
                 "liquidity_usd": 50000000.0,
                 "volume_24h": 10000000.0,
                 "token_symbol": "SOL",
-                "price_usd": sol_price_live
+                "price_usd": sol_price_live,
+                "token_created_at": datetime.fromtimestamp(1600000000.0, tz=timezone.utc)
             }
 
         # Check in-memory cache with 60s TTL
@@ -100,7 +103,8 @@ class SolanaTokenInfoService(ITokenInfoService):
                 "volume_24h": 3000.0,          # $3k volume
                 "token_symbol": symbol,
                 "symbol": symbol,
-                "price_usd": 1.0
+                "price_usd": 1.0,
+                "token_created_at": datetime.now(timezone.utc) - timedelta(minutes=120)
             }
             self.cache[token_address] = (time.time(), fallback_data)
             return fallback_data
@@ -158,12 +162,19 @@ class SolanaTokenInfoService(ITokenInfoService):
             token_symbol = main_pair.get("baseToken", {}).get("symbol", "UNKNOWN")
             price_usd = float(main_pair.get("priceUsd") or 0.0)
 
+            token_created_at = (
+                datetime.fromtimestamp(created_at_ms / 1000.0, tz=timezone.utc)
+                if created_at_ms
+                else datetime.now(timezone.utc) - timedelta(minutes=60)
+            )
+
             return {
                 "age_minutes": age_minutes,
                 "liquidity_usd": liquidity_usd,
                 "volume_24h": volume_24h,
                 "token_symbol": token_symbol,
-                "price_usd": price_usd
+                "price_usd": price_usd,
+                "token_created_at": token_created_at
             }
         except Exception as e:
             logger.error(f"Error parsing DexScreener payload: {e}")

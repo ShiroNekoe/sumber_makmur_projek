@@ -313,10 +313,12 @@ class ParallelExecutionEngine:
                 fail_exit = (self.position.token_address == "FailExitTokenxxxxxxxxxxxxxxxxxxxxxxxx")
                 fail_ks_exit = (self.position.token_address == "FailKillSwitchExitTokenxxxxxxxxxxxxxxxx")
                 
-                while not exit_success:
+                MAX_EXIT_ATTEMPTS = 10  # Batas keras: cegah infinite loop & rate-limit ban PumpPortal
+                
+                while not exit_success and attempts < MAX_EXIT_ATTEMPTS:
                     attempts += 1
                     try:
-                        logger.info(f"[PROTECTION] Placing market exit order for {self.position.token_address} (Attempt {attempts}, Slippage: {slippage_tolerance:.1%}) due to {reason}...")
+                        logger.info(f"[PROTECTION] Placing market exit order for {self.position.token_address} (Attempt {attempts}/{MAX_EXIT_ATTEMPTS}, Slippage: {slippage_tolerance:.1%}) due to {reason}...")
                         
                         if is_kill_switch:
                             if fail_ks_exit and attempts < 3: # fail first 2 attempts for testing
@@ -329,23 +331,40 @@ class ParallelExecutionEngine:
                         keypair = load_wallet_from_env()
                         
                         import sys
-                        is_testing = ("pytest" in sys.modules or "unittest" in sys.modules)
+                        is_testing = any("pytest" in arg or "unittest" in arg for arg in sys.argv) or "pytest" in sys.modules or "unittest" in sys.modules
+                        # Force false if run via uvicorn/main.py entrypoint to avoid test discovery false positives
+                        if any("uvicorn" in arg or "main.py" in arg for arg in sys.argv):
+                            is_testing = False
                         
                         if keypair and not is_testing:
                             # Local sign/broadcast for exit
                             from app.infrastructure.blockchain.pumpportal_client import build_trade_transaction
                             from app.infrastructure.blockchain.tx_signer import sign_and_broadcast_transaction
-                            
+                            from app.core.config import settings
                             unsigned_tx = await build_trade_transaction(
                                 public_key=str(keypair.pubkey()),
                                 action="sell",
                                 token_mint=self.position.token_address,
                                 amount="100%",
                                 denominated_in_sol=False,
-                                slippage=slippage_tolerance * 100,
-                                priority_fee=0.003
+                                slippage=slippage_tolerance * 100,  # dinamis, naik tiap retry
+                                priority_fee=settings.PRIORITY_FEE_SELL  # dari config, default 0.00005 SOL
                             )
                             tx_sig = await sign_and_broadcast_transaction(unsigned_tx, keypair)
+                            # Close token account to reclaim SOL rent after successful on-chain sell
+                            try:
+                                logger.info(f"[PROTECTION] Reclaiming SOL rent by closing token account for {self.position.token_address}...")
+                                from app.infrastructure.blockchain.tx_signer import close_token_account
+                                close_sig = await close_token_account(
+                                    self.position.token_address, keypair,
+                                    token_price_usd=self.current_price
+                                )
+                                if close_sig:
+                                    logger.info(f"[PROTECTION] Token account closed successfully, tx: {close_sig}")
+                                else:
+                                    logger.warning(f"[PROTECTION] Token account close failed or was skipped.")
+                            except Exception as close_err:
+                                logger.error(f"[PROTECTION] Error during token account close: {close_err}", exc_info=True)
                         else:
                             # Paper trade fallback
                             from app.infrastructure.blockchain.trading_service import execute_pumpportal_swap
@@ -368,23 +387,41 @@ class ParallelExecutionEngine:
                             await log_system_error(
                                 error_type=ErrorType.CRITICAL_EXIT_FAILED,
                                 severity=ErrorSeverity.CRITICAL,
-                                context=f"CRITICAL: Kill-Switch exit failed (Attempt {attempts}) for token {self.position.token_address}. Retrying immediately with slippage tolerance raised to {slippage_tolerance:.1%}.",
+                                context=f"CRITICAL: Kill-Switch exit failed (Attempt {attempts}/{MAX_EXIT_ATTEMPTS}) for token {self.position.token_address}. Retrying with slippage tolerance raised to {slippage_tolerance:.1%}.",
                                 recovery_action="immediate_aggressive_retry",
                                 resolution_status="pending"
                             )
                         else:
                             # Retry langsung dengan slippage tolerance +0.5% setiap retry
-                            slippage_tolerance += 0.005 # +0.5% slippage each retry
+                            slippage_tolerance = min(slippage_tolerance + 0.005, 0.50)  # +0.5% slippage, max 50%
                             from app.core.error_handler import log_system_error, ErrorType, ErrorSeverity
                             await log_system_error(
                                 error_type=ErrorType.EXIT_PENDING,
                                 severity=ErrorSeverity.WARNING,
-                                context=f"Exit pending: Exit failed (Attempt {attempts}) for token {self.position.token_address}. Retrying with slippage tolerance raised to {slippage_tolerance:.1%}.",
+                                context=f"Exit pending: Exit failed (Attempt {attempts}/{MAX_EXIT_ATTEMPTS}) for token {self.position.token_address}. Retrying with slippage tolerance raised to {slippage_tolerance:.1%}.",
                                 recovery_action="exit_retry_slippage_bump",
                                 resolution_status="pending"
                             )
-                            await asyncio.sleep(0.1) # small delay in normal condition retry
-                
+                            await asyncio.sleep(1.0)  # 1 detik delay antar retry hindari rate-limit
+
+                # Jika semua percobaan habis dan masih gagal, force-close posisi dari DB
+                if not exit_success:
+                    logger.error(
+                        f"[PROTECTION] [ABANDON] Exit GAGAL setelah {MAX_EXIT_ATTEMPTS} percobaan untuk token "
+                        f"{self.position.token_address}. Posisi di-force-close dari DB untuk mencegah loop."
+                    )
+                    from app.core.error_handler import log_system_error, ErrorType, ErrorSeverity
+                    await log_system_error(
+                        error_type=ErrorType.CRITICAL_EXIT_FAILED,
+                        severity=ErrorSeverity.CRITICAL,
+                        context=f"Exit ABANDONED setelah {MAX_EXIT_ATTEMPTS} percobaan untuk {self.position.token_address}. Posisi force-removed dari DB.",
+                        recovery_action="force_close_db",
+                        resolution_status="abandoned"
+                    )
+                    # Hapus posisi dari DB agar tidak diretry lagi
+                    await self.position_repo.delete_position(self.position.position_id)
+                    return  # Keluar dari execute_exit tanpa mencatat closed_trade
+
                 exit_price = self.current_price
                 
                 # 2. Calculate PnL and R-multiple

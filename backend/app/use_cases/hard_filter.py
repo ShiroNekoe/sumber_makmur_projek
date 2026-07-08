@@ -56,6 +56,22 @@ class TokenAgeLiquidityHardFilter:
             reason = "token_not_found"
         else:
             age_minutes = token_info.get("age_minutes", 0.0)
+
+            # Hitung ulang usia dari token_created_at jika tersedia
+            # agar usia tidak stale dari cache (usia terus bertambah setiap menit)
+            token_created_at = token_info.get("token_created_at")
+            if token_created_at:
+                try:
+                    if isinstance(token_created_at, str):
+                        created_dt = datetime.fromisoformat(token_created_at.replace("Z", "+00:00"))
+                    else:
+                        created_dt = token_created_at
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    age_minutes = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60.0
+                except Exception:
+                    pass  # fallback ke age_minutes dari API jika parse gagal
+
             liquidity_usd = token_info.get("liquidity_usd", 0.0)
             symbol = token_info.get("token_symbol", "")
             
@@ -70,6 +86,9 @@ class TokenAgeLiquidityHardFilter:
             elif age_minutes < settings.MIN_TOKEN_AGE_MINUTES:
                 passed = False
                 reason = f"age_too_low ({age_minutes:.1f}m < {settings.MIN_TOKEN_AGE_MINUTES}m)"
+            elif age_minutes > settings.MAX_TOKEN_AGE_MINUTES:
+                passed = False
+                reason = f"age_too_high ({age_minutes:.1f}m > {settings.MAX_TOKEN_AGE_MINUTES}m)"
             elif liquidity_usd < settings.MIN_LIQUIDITY_USD:
                 passed = False
                 reason = f"liquidity_too_low (${liquidity_usd:.2f} < ${settings.MIN_LIQUIDITY_USD:.2f})"

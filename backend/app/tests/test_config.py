@@ -25,6 +25,7 @@ class TestConfigManagement(unittest.IsolatedAsyncioTestCase):
                 "window_minutes": 5,
                 "mode": "AND",
                 "min_token_age_minutes": 60,
+                "max_token_age_minutes": 120,
                 "min_liquidity_usd": 5000.0,
                 "cooldown_seconds": 3600
             },

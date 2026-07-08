@@ -1,0 +1,290 @@
+
+--- Page 1 ---
+AI SMART MONEY
+TRADING SYSTEM
+Dokumentasi Arsitektur Sistem, Flow Aplikasi, dan Pipeline AI
+Wallet-triggered signal engine · XGBoost inference · live-data retraining loop
+Disusun oleh
+Lastico
+Tanggal
+21 June 2026
+Dokumen
+4 diagram: Arsitektur Sistem, Flow Aplikasi, Pipeline AI, Dashboard Preview
+
+--- Page 2 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 2
+DAFTAR ISI
+Ringkasan Dokumen
+Sistem dipecah menjadi 4 diagram utama agar tidak ada duplikasi konten antara flowchart, arsitektur,
+dan pipeline — masing-masing menjawab pertanyaan yang berbeda.
+01
+Arsitektur Sistem
+Layered view 5 layer — dari wallet monitoring sampai adaptive learning loop, dengan 3
+komponen baru disisipkan. Menjawab: 'komponen apa saja yang ada dan bagaimana mereka
+tersusun?'
+02
+Flow Aplikasi End-to-End
+Flowchart keputusan operasional harian — dari deteksi pergerakan wallet sampai posisi ditutup
+dan retrain, termasuk 2 decision point baru. Menjawab: 'apa yang terjadi langkah demi
+langkah?'
+03
+Pipeline AI — Fitur, Model, Output, Retrain
+Detail teknis ML: fitur input, konfigurasi XGBoost, output prediksi, dan strategi dataset live.
+Menjawab: 'bagaimana model bekerja dan dilatih?'
+04
+Dashboard Preview
+Redesign visual tampilan web dashboard alert engine, konsisten dengan gaya diagram lain.
+05
+Rencana Peningkatan
+Tiga perbaikan prioritas yang bisa diimplementasikan tanpa biaya tambahan: filter trigger, token
+safety gate, dan cold-start bootstrap.
+
+--- Page 3 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 3
+01 · ARSITEKTUR SISTEM
+Layered Architecture
+Lima layer fungsional, dari sumber data on-chain hingga loop pembelajaran adaptif — dengan 3
+komponen baru (ditandai hijau).
+Diagram 1 — Komponen bertanda hijau (Rule-Based Classifier, Token Safety Check, Model v0 Bootstrap) adalah
+ penambahan baru yang disisipkan ke layer yang sudah ada, bukan layer terpisah.
+ 
+--- Page 4 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 4
+01 · ARSITEKTUR SISTEM
+Catatan Layer
+Sistem disusun berlapis agar setiap bagian bisa diganti atau di-debug tanpa mengganggu bagian lain. Layer
+0 hanya bertugas mendengarkan event on-chain dari dua wallet target, lalu event tersebut kini disaring oleh
+Rule-Based Classifier sebelum masuk trigger window — memisahkan swap/LP yang relevan secara trading
+dari transfer internal atau top-up gas yang sering menimbulkan false signal. Layer 1 adalah trigger engine: ia
+menahan event sampai kondisi window 5 menit terpenuhi (AND/OR), baru meneruskannya.
+Layer 2 adalah inti analitis: feature extraction, pattern historis, dan market context digabung lalu diumpankan
+ke XGBoost. Output model kini melewati Token Safety Check tambahan (liquidity locked, kontrak verified,
+holder distribution) sebelum sampai ke Layer 3 — decision gate dan dashboard. Hanya sinyal yang lolos
+confidence dan safety check yang memicu alert; sisanya tetap dicatat untuk training.
+Layer 4 menutup loop: hasil closed trade nyata dipakai untuk retrain harian, dengan rollback otomatis jika
+model baru justru lebih buruk — dan kini dilengkapi Model v0 Bootstrap yang dilatih dari histori on-chain
+wallet itu sendiri, sehingga sistem tidak berjalan tanpa dasar model yang valid di minggu-minggu pertama
+operasionalnya.
+
+--- Page 5 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 5
+02 · FLOW APLIKASI
+End-to-End Decision Flow
+Alur keputusan operasional, dengan 2 titik keputusan baru: filter relevansi dan token safety check.
+Diagram 2 — Lima decision point: pergerakan wallet, filter relevansi (baru), trigger window, token safety check (baru), dan
+ confidence threshold.
+ 
+--- Page 6 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 6
+02 · FLOW APLIKASI
+Catatan Alur
+Flow ini menggambarkan satu siklus penuh sebagai proses keputusan, bukan sekadar struktur komponen.
+Setelah pergerakan wallet terdeteksi, event kini melewati filter relevansi — jika ternyata hanya transfer
+internal atau top-up gas, event diabaikan sebelum sempat memicu trigger window sama sekali. Ini
+mengurangi noise yang sebelumnya ikut masuk ke trigger window dan berpotensi mencemari dataset
+training.
+Titik penting: sinyal dengan confidence rendah tidak dibuang, melainkan tetap di-log dan masuk ke dataset
+training. Namun sebelum sampai ke pengecekan confidence, hasil prediksi XGBoost kini harus lolos token
+safety check — liquidity locked, kontrak verified, dan holder distribution sehat. Jika token gagal di tahap ini,
+alert diblokir terlepas dari seberapa tinggi confidence-nya, karena confidence tinggi tidak menjamin token
+tersebut bukan honeypot atau rug baru.
+Garis hijau putus-putus di sisi kanan menunjukkan feedback loop: setiap kali model selesai di-retrain pada
+02:00 UTC, versi model yang sudah diperbarui langsung dipakai pada siklus monitoring berikutnya. Sebelum
+50 closed trades live terkumpul, langkah XGBoost Inference memakai model bootstrap yang sudah dilatih
+dari histori on-chain wallet, sehingga sistem tetap punya dasar prediksi yang valid sejak hari pertama —
+bukan model kosong atau asal-asalan.
+
+--- Page 7 ---
+03 · PIPELINE AI
+Fitur, Model, Output, dan Strategi Retrain
+Detail teknis machine learning: dari feature engineering sampai dataset strategy.
+Pipeline AI — Fitur, Model, Output, Retrain
+XGBoost classifier dengan dataset live closed-trades, bukan data mock
+INPUT FEATURES — diekstrak saat trigger
+On-chain signals
+ • Ukuran posisi (USD)
+• Token age (menit)
+• Liquidity pool depth
+• Slippage actual · Cluster score
+Historical wallet
+ • Win rate wallet 30 hari
+• Average holding time
+• Typical trade size
+• Past exit pattern · token sama
+Market context
+ • SOL/USD momentum
+• Token volume/liquidity ratio
+• Hour of day (UTC)
+• Trending count · boost score
+XGBoost Classifier (multi-class)
+ n_estimators=300 · max_depth=6 · learning_rate=0.05 · tree_method=hist
+Dipilih karena dataset kecil (50–200 sample) — stabil, dan punya feature_importances_
+OUTPUT PREDIKSI
+Direction
+BUY / SELL / HOLD
+Confidence Score
+0.0 – 1.0 probability
+Target Price Estimate
+±% dari harga saat ini
+Confidence
+≥ 75% ?
+TIDAK
+ Log only — tetap masuk dataset
+YA
+Alert dikirim ke dashboard.
+DATASET STRATEGY — RETRAIN SETIAP 24 JAM
+Dataset: LIVE closed trades only (bukan mock)
+Sumber data
+Setiap posisi yang ditutup sistem (paper trade atau live) dalam 30 hari terakhir
+Risk per trade
+Fixed 1% dari equity per posisi — stop loss otomatis menyesuaikan size, bukan persentase harga token
+Labeling
+R-multiple = PnL_aktual(%) / 1% risk · ≥ +3.0R = label BUY_BENAR · ≤ -1.0R = label SALAH · di antaranya
+= HOLD
+Kolom dataset baru
+risk_pct · pnl_pct_actual · r_multiple · holding_time_minutes — dicatat per closed trade
+Class imbalance
+WR rendah by design → label SALAH jauh lebih banyak dari BUY_BENAR. Pakai scale_pos_weight
+(XGBoost) agar model tak hanya "aman" memprediksi SALAH/HOLD
+Min sample
+100–150 closed trades sebelum retrain pertama, ATAU 50 dengan syarat minimal 15–20 di antaranya
+berlabel BUY_BENAR
+Retrain schedule
+Cron job 02:00 UTC (volume pasar rendah) · total waktu retrain < 2 menit
+Metrik evaluasi
+Expectancy(R) = (WR × avg_R_win) − ((1−WR) × 1R) — metrik utama, bukan akurasi klasifikasi murni
+Rollback guard
+Rollback jika validation accuracy turun > 5% vs model sebelumnya, ATAU expectancy berubah dari positif ke
+negatif
+Mengapa bukan mock data?
+Mock data tidak punya slippage nyata, tidak ada kondisi ekstrem (rug / honeypot), dan tidak mencerminkan perilaku aktual wallet target
+— sehingga model yang dilatih darinya tidak generalisasi ke kondisi pasar riil.
+Mengapa XGBoost, bukan deep learning?
+Data terbatas (50–200 sample/30 hari) membuat tree-based model lebih stabil; feature_importances_ membantu debugging.
+Diagram 3 — Label kini berbasis R-multiple (risk per trade fixed 1%), bukan persentase PnL mentah;
+ expectancy ditambahkan sebagai metrik evaluasi utama untuk validasi retrain.
+Pemilihan XGBoost dibanding deep learning bukan soal preferensi, tapi konsekuensi langsung dari ukuran
+dataset: dengan hanya 50–200 closed trades dalam rolling window 30 hari, model deep learning akan overfit
+atau gagal konvergen. Tree-based model jauh lebih robust pada data sekecil ini, dan feature_importances_
+memberi visibilitas langsung ke fitur mana yang sebenarnya berkontribusi saat model salah prediksi —
+penting untuk debugging cepat.
+Strategi dataset adalah keputusan paling kritis dalam keseluruhan pipeline: data mock secara eksplisit tidak
+pernah dipakai untuk training karena tidak merepresentasikan slippage nyata, kondisi ekstrem (rug pull,
+honeypot), atau perilaku wallet target yang sesungguhnya. Hanya hasil closed position dari sistem sendiri —
+baik paper trade maupun live — yang masuk ke dataset, dengan label otomatis dari R-multiple hasil PnL aktual.
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 7
+
+--- Page 8 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 8
+04 · DASHBOARD PREVIEW
+Web Dashboard Alert Engine
+Tampilan browser-based, real-time, tanpa aplikasi mobile.
+Diagram 4 — Layout dashboard: wallet monitor, live signal feed, confidence score, histori 24 jam, trade log, dan ringkasan
+ statistik harian.
+ Dashboard menerima data secara push melalui WebSocket, bukan polling — sehingga sinyal baru muncul
+seketika tanpa delay refresh. Tidak ada komponen mobile app karena seluruh interaksi (memantau sinyal,
+melihat histori, mengecek statistik) cukup dilakukan lewat browser, mengurangi kompleksitas maintenance
+lintas platform.
+Tiga kartu statistik di bagian bawah — win rate, triggers hari ini, dan alerts fired — memberi gambaran cepat
+soal kualitas sinyal: rasio alerts fired terhadap triggers today menunjukkan seberapa sering trigger
+benar-benar menghasilkan sinyal dengan confidence tinggi, bukan sekadar noise dari pergerakan wallet kecil.
+
+--- Page 9 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 9
+06 · EKSEKUSI OTOMATIS
+Eksekusi Trade Otomatis
+Tiga lapis proteksi paralel begitu posisi terbuka: stop-loss berbasis harga, trailing take-profit
+bertingkat, dan kill-switch on-chain untuk deteksi rug langsung.
+Diagram 6 — Tiga lapis proteksi berjalan paralel begitu posisi terbuka: Lapis 1 (price-based SL, selalu aktif), Lapis 2 (staged
+trailing TP, makin ketat saat profit naik), dan Lapis 3 (on-chain kill-switch, independen dari harga, prioritas tertinggi).
+
+--- Page 10 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 10
+06 · EKSEKUSI OTOMATIS
+Catatan Eksekusi
+Tiga lapis proteksi berjalan paralel, bukan berurutan. Begitu posisi terbuka via pump.fun API, sistem
+membutuhkan tiga mekanisme yang aktif bersamaan: Lapis 1 (price-based stop-loss, baseline yang selalu
+aktif), Lapis 2 (trailing take-profit, begitu profit melewati ambang aman), dan Lapis 3 (on-chain kill-switch,
+independen dari harga). Ini penting karena rug bisa terjadi dalam hitungan detik — lebih cepat dari
+price-based SL biasa bisa bereaksi.
+SL awal tetap fixed -1R. Sebelum trailing aktif, stop-loss murni soal position sizing dan tidak diubah menjadi
+dinamis, karena fixed -1R itulah yang membuat R-multiple konsisten secara matematis di seluruh sistem.
+Trailing TP memakai staged trailing, bukan persentase tetap. Karena win rate rendah by design dan
+strategi membutuhkan kemenangan besar (≥+3R) untuk menutup banyaknya kekalahan kecil, trail yang
+terlalu ketat akan memotong winner besar terlalu cepat, sementara trail yang terlalu longgar menyerahkan
+kembali profit besar yang sudah didapat. Logikanya: makin tinggi R yang sudah dicapai, makin ketat trail-nya
+— dari +1R–2R tanpa trailing (SL tetap -1R), +2R–5R trailing 25% dari puncak, +5R–10R diperketat ke 15%,
+hingga >+10R diperketat lagi ke 10% untuk mengamankan moonshot. Begitu posisi mencapai +2R, SL
+secara efektif sudah naik ke breakeven atau lebih.
+Kill-switch on-chain mendengar event langsung, bukan menunggu efeknya di harga. Saat liquidity
+ditarik di pump.fun atau LP di-pull, harga belum tentu langsung jatuh di candle berikutnya — ada jeda singkat
+sebelum slippage kelihatan, dan saat itu sudah telat jika hanya mengandalkan price-based SL. Sistem perlu
+subscribe real-time (bukan polling) ke empat sinyal: LP removal/burn status berubah (prioritas tertinggi, exit
+market order langsung), dev/creator wallet melakukan sell besar di atas threshold persentase supply,
+slippage simulasi yang melonjak tiba-tiba pada quote Jupiter/pump.fun, dan holder concentration yang
+berubah drastis dalam window pendek. Karena eksekusi via API pump.fun, exit begitu kill-switch trigger harus
+market order, bukan limit — kehilangan sedikit ke slippage demi kecepatan adalah trade-off yang benar di
+situasi rug.
+Urutan prioritas saat dua lapis trigger bersamaan: kill-switch (Lapis 3) selalu override Lapis 1 dan 2. Jika
+LP removal terdeteksi saat posisi sedang +5R dengan trailing aktif, sistem tidak menunggu giliran evaluasi
+trailing — langsung market sell. Kill-switch berjalan di proses/thread terpisah dengan polling interval tercepat
+(idealnya event-driven via websocket dari RPC node, bukan polling), dan begitu trigger ia mengirim order
+tanpa menunggu evaluasi SL/TP selesai.
+Kolom exit_reason ditambahkan ke skema dataset closed trade. Nilainya salah satu dari SL, trailing_tp,
+kill_switch_lp, kill_switch_dev_dump, kill_switch_slippage, atau manual. Ini bukan sekadar logging — kolom
+ini memungkinkan pemisahan antara label SALAH yang murni karena prediksi model salah, dengan label
+SALAH yang sebenarnya terjadi karena kena rug yang tidak ada hubungannya dengan kualitas sinyal
+whale-following. Tanpa pemisahan ini, kill-switch yang sering trigger berisiko mencemari label training —
+model bisa belajar pola yang salah karena menganggap entry yang sebenarnya benar tapi keburu di-rug
+sebagai SALAH.
+
+--- Page 11 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 11
+Partial exit adalah opsi lanjutan, bukan langkah awal. Jika data live menunjukkan winner besar sering
+mengembalikan terlalu banyak profit ke trailing sebelum sempat exit, jual 30–50% posisi begitu menyentuh
++3R (titik threshold BUY_BENAR) dapat mengunci sebagian profit tanpa mematikan potensi moonshot,
+sisanya tetap di-trailing. Mulai dengan trailing murni dahulu; tambahkan partial exit hanya jika data
+menunjukkan itu perlu.
+Threshold trailing (25% / 15% / 10%) dan tier R (2R / 5R / 10R) adalah starting point, bukan angka final.
+Sama seperti threshold labeling +3.0R, angka pastinya perlu dikalibrasi dari distribusi R-multiple sistem
+sendiri setelah cukup data live terkumpul.
+
+--- Page 12 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 9
+05 · RENCANA PENINGKATAN
+3 Perbaikan Prioritas, Tanpa Biaya
+Tambahan
+Trigger filtering, token safety gate, dan cold-start bootstrap — semua memakai data publik gratis.
+Diagram 5 — Setiap perbaikan dipetakan ke layer arsitektur yang sudah ada, sehingga implementasi tidak mengubah
+ struktur sistem secara keseluruhan, hanya menyisipkan logika tambahan.
+ Perbaikan 1 — Trigger Filtering. Selama ini swap, transfer, dan LP change diperlakukan setara, padahal
+internal transfer (top-up gas, pindah ke wallet sendiri) bukan sinyal trading dan hanya menambah noise ke
+dataset. Rule-based classifier memisahkan aktivitas yang relevan secara trading dari yang tidak, berdasarkan
+alamat router DEX yang sudah dikenal publik dan threshold nilai transaksi sederhana.
+Halaman 12
+
+--- Page 13 ---
+AI Smart Money Trading System — Dokumentasi Arsitektur
+Halaman 10
+Perbaikan 2 — Token Safety Gate. Confidence tinggi dari XGBoost tidak menjamin token aman dari rug pull
+atau honeypot, karena model hanya belajar dari pola historis, bukan dari risiko kontrak itu sendiri. Dengan
+menambahkan pengecekan liquidity lock, status verifikasi kontrak, dan distribusi holder — semuanya dari API
+publik seperti DexScreener atau block explorer — alert hanya terkirim jika dua filter independen sama-sama
+lolos.
+Perbaikan 3 — Cold-Start Bootstrap. Tanpa langkah ini, sistem baru punya model yang benar-benar terlatih
+setelah 50 closed trades live terkumpul, yang bisa berarti berminggu-minggu berjalan tanpa dasar prediksi
+yang solid. Dengan menarik histori transaksi wallet target dari block explorer publik dan merekonstruksi label
+dari pergerakan harga riil pasca-transaksi, model versi awal (v0) sudah punya dasar nyata sejak hari pertama
+sistem berjalan — sebelum digantikan model v1 begitu data live mencukupi.
+Halaman 13

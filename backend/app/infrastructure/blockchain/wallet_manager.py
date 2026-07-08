@@ -1,6 +1,7 @@
 import logging
 import json
 import urllib.request
+import asyncio
 from typing import Optional
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
@@ -35,7 +36,8 @@ async def get_sol_balance(pubkey: Pubkey) -> float:
     Queries current Solana wallet balance via RPC JSON-RPC HTTP query.
     Returns balance in SOL (float).
     """
-    rpc_url = getattr(settings, "SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+    primary_url = getattr(settings, "RPC_PRIMARY_URL", "https://api.mainnet-beta.solana.com")
+    secondary_url = getattr(settings, "RPC_SECONDARY_URL", "https://api.devnet.solana.com")
     
     payload = {
         "jsonrpc": "2.0",
@@ -44,24 +46,30 @@ async def get_sol_balance(pubkey: Pubkey) -> float:
         "params": [str(pubkey)]
     }
     
-    def sync_fetch():
-        try:
-            req = urllib.request.Request(
-                rpc_url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=5) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except Exception as e:
-            return {"error": str(e)}
+    # Try primary, fallback to secondary on error
+    res = None
+    for attempt, url in enumerate([primary_url, secondary_url]):
+        def sync_fetch():
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=6) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except Exception as e:
+                return {"error": str(e)}
 
-    import asyncio
-    res = await asyncio.to_thread(sync_fetch)
-    
-    if "error" in res or "result" not in res:
-        logger.error(f"[WALLET MANAGER] Failed to query SOL balance from RPC: {res.get('error', 'unknown error')}")
+        res = await asyncio.to_thread(sync_fetch)
+        if "error" not in res and "result" in res:
+            break
+        else:
+            logger.warning(f"[WALLET MANAGER] get_sol_balance failed on {url} (attempt {attempt+1}): {res.get('error', 'unknown error')}")
+            
+    if not res or "error" in res or "result" not in res:
+        logger.error("[WALLET MANAGER] Failed to query SOL balance from both RPC endpoints.")
         return 0.0
         
     lamports = res["result"].get("value", 0)

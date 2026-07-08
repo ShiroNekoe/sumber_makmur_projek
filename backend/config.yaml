@@ -1,11 +1,12 @@
 # config.yaml — satu file, semua threshold operasional
 
 trigger_engine:
-  window_minutes: 5
-  mode: "OR" # AND | OR
-  min_token_age_minutes: 30   # Dari 60 → 30 menit agar token baru bisa masuk
-  min_liquidity_usd: 3000.0   # Dari 5000 → 3000 USD
-  cooldown_seconds: 1800      # Dari 3600 → 1800 detik (30 menit)
+  window_minutes: 30
+  mode: "OR"
+  min_token_age_minutes: 2.0        # Diubah dari 45 agar koin baru (pump.fun) tidak diblokir
+  max_token_age_minutes: 120
+  min_liquidity_usd: 6000.0        # naik dari 3000 — margin aman di atas rentang rug klasik (2-5 SOL)
+  cooldown_seconds: 2700            # naik dari 1800 — kurangi risiko "kena umpan dua kali"
 
 decision_gate:
   confidence_threshold: 0.50  # Diturunkan 0.75 → 0.50 agar model bootstrap bisa generate BUY signal
@@ -13,14 +14,15 @@ decision_gate:
 
 risk:
   risk_pct_per_trade: 0.01 # Fixed 1% dari equity
-  max_concurrent_positions: 3
+  max_concurrent_positions: 5
 
 trailing_tp:
   tiers:
-    - {r_min: 1, r_max: 2, trail_pct: null} # SL tetap -1R
-    - {r_min: 2, r_max: 5, trail_pct: 0.25}  # Trails 25% dari puncak
-    - {r_min: 5, r_max: 10, trail_pct: 0.15} # Trails 15% dari puncak
-    - {r_min: 10, r_max: null, trail_pct: 0.10} # Trails 10% dari puncak
+    - {r_min: 0, r_max: 1, trail_pct: null}        # SL tetap -1R sampai 1R
+    - {r_min: 1, r_max: 2, trail_pct: 0.45}         # DIUBAH — dulu null (tanpa proteksi), sekarang ada trailing + breakeven guard
+    - {r_min: 2, r_max: 5, trail_pct: 0.25}
+    - {r_min: 5, r_max: 10, trail_pct: 0.15}
+    - {r_min: 10, r_max: null, trail_pct: 0.10}
 
 labeling:
   buy_benar_threshold_r: 3.0
@@ -73,3 +75,14 @@ rpc:
   secondary_url: "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"
   fallback_url: "https://api.mainnet-beta.solana.com"
   max_retry: 5
+
+# --- Transaction Fees -------------------------------------------------------
+# Priority fee = tip ke validator Jito agar transaksi diproses lebih cepat.
+# BUY: kompetitif | SELL: hemat | DUST: hampir gratis
+transaction_fees:
+  priority_fee_buy: 0.0001
+  priority_fee_sell: 0.00005
+  priority_fee_dust: 0.000005
+  slippage_buy_pct: 5.0
+  slippage_sell_pct: 10.0
+  slippage_sell_emergency_pct: 25.0

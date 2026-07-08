@@ -39,6 +39,7 @@ class TestTriggerEngine(unittest.IsolatedAsyncioTestCase):
         # Force some settings
         settings.TRIGGER_WINDOW_MINUTES = 5
         settings.MIN_TOKEN_AGE_MINUTES = 60
+        settings.MAX_TOKEN_AGE_MINUTES = 1440
         settings.MIN_LIQUIDITY_USD = 5000.0
         settings.COOLDOWN_SECONDS = 3600
 
@@ -54,6 +55,26 @@ class TestTriggerEngine(unittest.IsolatedAsyncioTestCase):
             "wallet_address": "Wha1eA11111111111111111111111111111111111",
             "token_mint": "NewCoinAddressxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             "signature": "sig_too_new",
+            "timestamp_utc": datetime.now(timezone.utc)
+        }
+        
+        await self.engine.trigger_event(event)
+        
+        self.mock_ml_pipeline.analyze_token.assert_not_called()
+        self.mock_cooldown_repo.set_cooldown.assert_not_called()
+
+    async def test_hard_filter_token_too_old(self):
+        # Set token info as too old (3000 minutes old)
+        self.mock_token_info_service.get_token_info.return_value = {
+            "age_minutes": 3000.0,
+            "liquidity_usd": 15000.0,
+            "token_symbol": "OLD_COIN"
+        }
+        
+        event = {
+            "wallet_address": "Wha1eA11111111111111111111111111111111111",
+            "token_mint": "OldCoinAddressxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "signature": "sig_too_old",
             "timestamp_utc": datetime.now(timezone.utc)
         }
         

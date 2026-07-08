@@ -15,8 +15,8 @@ async def build_trade_transaction(
     amount: float,
     denominated_in_sol: bool = True,
     slippage: float = 5.0,
-    priority_fee: float = 0.003,
-    pool: str = "pump"
+    priority_fee: float = 0.0001,  # Default hemat — override dari caller jika perlu
+    pool: str = "auto"
 ) -> Optional[bytes]:
     """
     Sends POST request to PumpPortal's Local Transaction API.
@@ -30,7 +30,7 @@ async def build_trade_transaction(
         "publicKey": public_key,
         "action": action,
         "mint": token_mint,
-        "amount": str(amount) if not denominated_in_sol and isinstance(amount, str) else amount,
+        "amount": amount,
         "denominatedInSol": "true" if denominated_in_sol else "false",
         "slippage": int(slippage),
         "priorityFee": priority_fee,
@@ -67,8 +67,8 @@ async def build_trade_transaction(
             # Client errors (e.g. 400 Bad Request, 401, 403, 404) are permanent
             if 400 <= status_code < 500:
                 error_body = http_err.read().decode("utf-8", errors="ignore")
-                logger.error(f"[PUMPPORTAL CLIENT] Permanent error {status_code}: {error_body}")
-                raise ValueError(f"Permanent PumpPortal API failure: {error_body}")
+                logger.error(f"[PUMPPORTAL CLIENT] Permanent error {status_code} ({http_err.reason}): {error_body}")
+                raise ValueError(f"Permanent PumpPortal API failure: {http_err.reason} - {error_body}")
             
             # 5xx Server errors are transient
             logger.warning(f"[PUMPPORTAL CLIENT] Transient HTTP error {status_code} (attempt {attempt+1}/{max_attempts})")

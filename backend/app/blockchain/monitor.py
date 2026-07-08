@@ -37,10 +37,13 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         self.active_wallets: Set[str] = set()
         self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=100) # Backpressure limit
         self.is_running = False
-        self.websocket: Optional[websockets.WebSocketClientProtocol] = None
+        self.websocket = None
         self.monitor_task: Optional[asyncio.Task] = None
         self.heartbeat_task: Optional[asyncio.Task] = None
         self.health_check_task: Optional[asyncio.Task] = None
+        
+        # Lock to prevent race conditions between heartbeat and monitor loops
+        self._ws_lock = asyncio.Lock()
         
         # Instance attributes mirror the class defaults
         self.rpc_state = SolanaWebSocketMonitor.rpc_state
@@ -92,8 +95,13 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         self.is_running = False
         logger.info("Stopping Solana Wallet Movement Monitor...")
         
-        if self.websocket:
-            await self.websocket.close()
+        async with self._ws_lock:
+            if self.websocket:
+                try:
+                    await self.websocket.close()
+                except Exception:
+                    pass
+                self.websocket = None
         
         if self.monitor_task:
             self.monitor_task.cancel()
@@ -133,7 +141,8 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                         
             except (websockets.exceptions.ConnectionClosed, Exception) as e:
                 logger.error(f"WebSocket connection error: {e}")
-                self.websocket = None
+                async with self._ws_lock:
+                    self.websocket = None
                 
                 # Log central F-19 error
                 from app.core.error_handler import log_system_error, ErrorType, ErrorSeverity
@@ -565,18 +574,34 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
 
 
     async def _run_heartbeat_loop(self):
-        """Sends lightweight websocket ping to verify connection health."""
+        """Monitors connection state and forcefully resets dead connections.
+        Uses state.name check only — compatible with websockets v16.0.
+        Manual ping/pong removed as it is handled internally by the library.
+        """
         while self.is_running:
             await asyncio.sleep(30)
-            if self.websocket and not self.websocket.closed:
+            async with self._ws_lock:
+                ws = self.websocket
+                if ws is None:
+                    logger.debug("WebSocket Heartbeat: No active connection.")
+                    continue
                 try:
-                    pong_waiter = await self.websocket.ping()
-                    await asyncio.wait_for(pong_waiter, timeout=5.0)
-                    logger.debug("WebSocket Heartbeat: Connection healthy.")
+                    state = ws.state.name
+                    if state == "OPEN":
+                        logger.debug("WebSocket Heartbeat: Connection healthy (state=OPEN).")
+                    else:
+                        logger.warning(f"WebSocket Heartbeat: Connection in dead state ({state}). Forcing reset.")
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        self.websocket = None
                 except Exception as e:
-                    logger.error(f"WebSocket heartbeat failure: {e}")
-                    # Force close connection to trigger reconnect backoff
-                    await self.websocket.close()
+                    logger.error(f"WebSocket heartbeat check error: {e}")
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
                     self.websocket = None
 
     async def _cleanup_dedup_window_loop(self):

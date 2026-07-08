@@ -25,8 +25,10 @@ class TestTokenAgeLiquidityHardFilter(unittest.IsolatedAsyncioTestCase):
         )
 
         # Configured defaults in test environment settings:
-        # min_token_age_minutes: 60
-        # min_liquidity_usd: 5000.0
+        from app.core.config import settings
+        settings.MIN_TOKEN_AGE_MINUTES = 60
+        settings.MAX_TOKEN_AGE_MINUTES = 1440
+        settings.MIN_LIQUIDITY_USD = 5000.0
 
     async def test_token_passes_filter(self):
         # Setup: Token is 2 hours old and has $15k liquidity (passes both checks)
@@ -59,6 +61,36 @@ class TestTokenAgeLiquidityHardFilter(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(log, HardFilterAuditLog)
         self.assertTrue(log.passed)
         self.assertIsNone(log.reason)
+
+    async def test_token_fails_max_age(self):
+        # Setup: Token is 25 hours (1500m) old (fails 1440m max age threshold)
+        self.token_info_service.get_token_info.return_value = {
+            "age_minutes": 1500.0,
+            "liquidity_usd": 15000.0,
+            "volume_24h": 3000.0,
+            "token_symbol": "OLD"
+        }
+
+        event = {
+            "wallet_address": "Wha1eA11111111111111111111111111111111111",
+            "event_type": "swap",
+            "token_mint": "EKpQGSJtjMFqKZ9KQGWjhoxjq2WqU1AF9Z23J1x584",
+            "amount_usd": 1000.0,
+            "signature": "sig_too_old"
+        }
+
+        await self.hard_filter.process_event(event)
+
+        # Assert: Discarded and not forwarded to trigger engine
+        self.trigger_engine.trigger_event.assert_not_called()
+
+        # Assert: Decision audited as failure
+        self.hard_filter_log_repo.add_hard_filter_log.assert_called_once()
+        args, _ = self.hard_filter_log_repo.add_hard_filter_log.call_args
+        log = args[0]
+        self.assertIsInstance(log, HardFilterAuditLog)
+        self.assertFalse(log.passed)
+        self.assertIn("age_too_high", log.reason)
 
     async def test_token_fails_age(self):
         # Setup: Token is 15m old (fails new 30m age threshold)

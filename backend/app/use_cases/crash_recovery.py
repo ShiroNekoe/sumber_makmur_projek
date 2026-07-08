@@ -1,8 +1,10 @@
 import logging
 import uuid
 import asyncio
+import json
+import urllib.request
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional, List, Set
 
 from app.core.config import settings
 from app.domain.models import OpenPosition, ClosedTrade
@@ -55,6 +57,9 @@ class CrashRecoveryService:
         logger.info("[RECOVERY] Starting system recovery checks...")
         startup_time = datetime.now(timezone.utc)
         recovery_actions = []
+
+        # 0. Reconcile on-chain positions vs DB (detect orphaned tokens)
+        await self._reconcile_onchain_positions()
 
         # 1. Load active model
         active_model = await self.model_registry_repo.get_active_model()
@@ -200,3 +205,183 @@ class CrashRecoveryService:
             f" - Open Positions Count: {open_positions_count}\n"
             f" - Recovery Actions Taken: {recovery_actions}"
         )
+
+    async def _reconcile_onchain_positions(self) -> None:
+        """
+        F-17 Extension: Orphaned Position Guard.
+        Compares on-chain SPL token holdings with open_positions in DB.
+        Tokens found on-chain but NOT in DB are 'orphaned' (e.g. after DB reset).
+        - Value >= $1.00 USD  -> create synthetic open_position for F-09 to monitor
+        - Value <  $1.00 USD  -> sell + close account immediately (dust cleanup)
+        """
+        logger.info("[RECOVERY] [ORPHAN GUARD] Starting on-chain vs DB reconciliation...")
+        
+        try:
+            from app.infrastructure.blockchain.wallet_manager import load_wallet_from_env
+            keypair = load_wallet_from_env()
+            if not keypair:
+                logger.warning("[RECOVERY] [ORPHAN GUARD] No keypair available, skipping on-chain reconciliation.")
+                return
+
+            pubkey_str = str(keypair.pubkey())
+            rpc_url = getattr(settings, "RPC_PRIMARY_URL", "https://api.mainnet-beta.solana.com")
+
+            # 1. Fetch on-chain SPL token accounts
+            def rpc_call(method, params):
+                payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+                req = urllib.request.Request(
+                    rpc_url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            token_res = await asyncio.to_thread(rpc_call, "getTokenAccountsByOwner", [
+                pubkey_str,
+                {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"},
+                {"encoding": "jsonParsed"}
+            ])
+
+            onchain_tokens = {}
+            for acc in token_res.get("result", {}).get("value", []):
+                try:
+                    info = acc["account"]["data"]["parsed"]["info"]
+                    mint = info["mint"]
+                    ui_amount = float(info["tokenAmount"].get("uiAmount") or 0.0)
+                    if ui_amount > 0:
+                        onchain_tokens[mint] = ui_amount
+                except Exception:
+                    pass
+
+            if not onchain_tokens:
+                logger.info("[RECOVERY] [ORPHAN GUARD] No SPL tokens found on-chain. Nothing to reconcile.")
+                return
+
+            # 2. Get tokens already tracked in DB
+            open_positions = await self.position_repo.get_open_positions()
+            db_tokens: Set[str] = {pos.token_address for pos in open_positions}
+
+            # 3. Find orphaned tokens (on-chain but not in DB)
+            orphaned: dict = {m: amt for m, amt in onchain_tokens.items() if m not in db_tokens}
+
+            if not orphaned:
+                logger.info("[RECOVERY] [ORPHAN GUARD] All on-chain tokens are tracked in DB. No orphans found.")
+                return
+
+            logger.warning(f"[RECOVERY] [ORPHAN GUARD] Found {len(orphaned)} orphaned token(s) on-chain not in DB: {list(orphaned.keys())}")
+
+            from app.infrastructure.blockchain.pumpportal_client import build_trade_transaction
+            from app.infrastructure.blockchain.tx_signer import sign_and_broadcast_transaction, close_token_account
+
+            for mint, amount in orphaned.items():
+                try:
+                    # Fetch price
+                    token_info = await self.token_info_service.get_token_info(mint)
+                    price_usd = float(token_info.get("price_usd") or 0.0)
+                    value_usd = amount * price_usd
+
+                    logger.warning(
+                        f"[RECOVERY] [ORPHAN GUARD] Orphaned: {mint[:12]}... "
+                        f"| {amount:.4f} tokens | ~${value_usd:.4f} USD"
+                    )
+
+                    if value_usd >= 1.00:
+                        # Significant value — create synthetic open_position for F-09 to monitor
+                        logger.warning(
+                            f"[RECOVERY] [ORPHAN GUARD] Value ${value_usd:.2f} >= $1. "
+                            f"Creating synthetic open_position for monitoring."
+                        )
+                        # Use a default wallet source (first active wallet)
+                        from app.infrastructure.database.repository import SQLAlchemyWalletRepository
+                        wallets = await self.position_repo.get_open_positions()  # fallback
+                        wallet_source = pubkey_str  # use our own wallet as source
+
+                        sl_price = price_usd * 0.50  # Conservative SL: -50%
+                        synthetic_pos = OpenPosition(
+                            position_id=f"orphan_{uuid.uuid4().hex[:8]}",
+                            wallet_source=wallet_source,
+                            token_address=mint,
+                            state="OPEN",
+                            entry_price=price_usd,
+                            entry_ts=datetime.now(timezone.utc),
+                            sl_initial=sl_price,
+                            risk_pct=0.01,
+                            position_size_usd=value_usd,
+                            trailing_active=False,
+                            trailing_level=None,
+                            peak_r_multiple=0.0,
+                            confidence_score=0.5,
+                            model_version="orphan_recovery"
+                        )
+
+                        try:
+                            await self.position_repo.add_position(synthetic_pos)
+                            logger.info(f"[RECOVERY] [ORPHAN GUARD] Synthetic position created: {synthetic_pos.position_id}")
+
+                            # Re-activate F-09 protection
+                            from app.execution.executor import ParallelExecutionEngine
+                            engine = ParallelExecutionEngine(
+                                synthetic_pos,
+                                self.position_repo,
+                                self.cooldown_repo,
+                                self.model_registry_repo,
+                                self.trade_history_repo,
+                                token_info_service=self.token_info_service
+                            )
+                            asyncio.create_task(engine.start_monitoring())
+                            logger.info(f"[RECOVERY] [ORPHAN GUARD] F-09 protection activated for orphaned {mint[:12]}...")
+                        except Exception as pos_err:
+                            logger.error(f"[RECOVERY] [ORPHAN GUARD] Failed to create synthetic position: {pos_err}")
+
+                    else:
+                        # Low value dust — sell immediately and close account
+                        logger.info(
+                            f"[RECOVERY] [ORPHAN GUARD] Value ${value_usd:.4f} < $1. "
+                            f"Selling dust and closing account."
+                        )
+                        try:
+                            unsigned_tx = await build_trade_transaction(
+                                public_key=pubkey_str,
+                                action="sell",
+                                token_mint=mint,
+                                amount="100%",
+                                denominated_in_sol=False,
+                                slippage=settings.SLIPPAGE_SELL_EMERGENCY_PCT,
+                                priority_fee=settings.PRIORITY_FEE_DUST,
+                                pool="auto"
+                            )
+                            if unsigned_tx:
+                                tx_sig = await sign_and_broadcast_transaction(unsigned_tx, keypair)
+                                logger.info(f"[RECOVERY] [ORPHAN GUARD] Dust sold. TX: {tx_sig}")
+                                await asyncio.sleep(3)
+                        except Exception as sell_err:
+                            logger.warning(f"[RECOVERY] [ORPHAN GUARD] Could not sell dust {mint}: {sell_err}")
+
+                        try:
+                            close_sig = await close_token_account(mint, keypair, token_price_usd=0.0)
+                            if close_sig:
+                                logger.info(f"[RECOVERY] [ORPHAN GUARD] Token account closed. TX: {close_sig}")
+                        except Exception as close_err:
+                            logger.warning(f"[RECOVERY] [ORPHAN GUARD] Could not close account {mint}: {close_err}")
+
+                    await ws_manager.broadcast({
+                        "type": "system_alert",
+                        "data": {
+                            "event": "system_alert",
+                            "alert_type": "orphan_position_detected",
+                            "message": (
+                                f"Orphaned token detected: {mint[:12]}... "
+                                f"({amount:.4f} tokens, ~${value_usd:.2f}). "
+                                f"{'Synthetic position created.' if value_usd >= 1.00 else 'Dust sold & account closed.'}"
+                            ),
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    })
+
+                except Exception as e:
+                    logger.error(f"[RECOVERY] [ORPHAN GUARD] Error handling orphaned token {mint}: {e}", exc_info=True)
+
+        except Exception as outer_err:
+            logger.error(f"[RECOVERY] [ORPHAN GUARD] Reconciliation failed: {outer_err}", exc_info=True)

@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     TRIGGER_WINDOW_MINUTES: int = 5
     TRIGGER_MODE: str = "AND"
     MIN_TOKEN_AGE_MINUTES: int = 60
+    MAX_TOKEN_AGE_MINUTES: int = 1440
     MIN_LIQUIDITY_USD: float = 5000.0
     COOLDOWN_SECONDS: int = 3600
     
@@ -79,6 +80,14 @@ class Settings(BaseSettings):
     
     KILL_SWITCH_DEV_WALLET_SELL_THRESHOLD_PCT: float = 0.05
     KILL_SWITCH_SLIPPAGE_SPIKE_THRESHOLD_PCT: float = 0.10
+
+    # Transaction fee settings (tiered by urgency)
+    PRIORITY_FEE_BUY: float = 0.0001      # SOL — BUY: cukup kompetitif
+    PRIORITY_FEE_SELL: float = 0.00005    # SOL — SELL normal: hemat
+    PRIORITY_FEE_DUST: float = 0.000005   # SOL — dust/close: hampir gratis
+    SLIPPAGE_BUY_PCT: float = 5.0         # % slippage beli
+    SLIPPAGE_SELL_PCT: float = 10.0       # % slippage jual normal
+    SLIPPAGE_SELL_EMERGENCY_PCT: float = 25.0  # % slippage emergency/kill-switch
 
     # Dynamic Wallet Discovery Settings
     DISCOVERY_OCCURRENCE_THRESHOLD: int = 3
@@ -117,7 +126,7 @@ class Settings(BaseSettings):
     def validate_config(self, config_data: dict):
         """Validates structured types, value bounds, and constraints of config.yaml."""
         required_structure = {
-            "trigger_engine": ["window_minutes", "mode", "min_token_age_minutes", "min_liquidity_usd", "cooldown_seconds"],
+            "trigger_engine": ["window_minutes", "mode", "min_token_age_minutes", "max_token_age_minutes", "min_liquidity_usd", "cooldown_seconds"],
             "decision_gate": ["confidence_threshold"],
             "risk": ["risk_pct_per_trade", "max_concurrent_positions"],
             "trailing_tp": ["tiers"],
@@ -205,6 +214,7 @@ class Settings(BaseSettings):
         self.TRIGGER_WINDOW_MINUTES = te.get("window_minutes", self.TRIGGER_WINDOW_MINUTES)
         self.TRIGGER_MODE = te.get("mode", self.TRIGGER_MODE)
         self.MIN_TOKEN_AGE_MINUTES = te.get("min_token_age_minutes", self.MIN_TOKEN_AGE_MINUTES)
+        self.MAX_TOKEN_AGE_MINUTES = te.get("max_token_age_minutes", self.MAX_TOKEN_AGE_MINUTES)
         self.MIN_LIQUIDITY_USD = te.get("min_liquidity_usd", self.MIN_LIQUIDITY_USD)
         self.COOLDOWN_SECONDS = te.get("cooldown_seconds", self.COOLDOWN_SECONDS)
         
@@ -246,6 +256,15 @@ class Settings(BaseSettings):
         ks = config_data.get("kill_switch", {})
         self.KILL_SWITCH_DEV_WALLET_SELL_THRESHOLD_PCT = ks.get("dev_wallet_sell_threshold_pct", self.KILL_SWITCH_DEV_WALLET_SELL_THRESHOLD_PCT)
         self.KILL_SWITCH_SLIPPAGE_SPIKE_THRESHOLD_PCT = ks.get("slippage_spike_threshold_pct", self.KILL_SWITCH_SLIPPAGE_SPIKE_THRESHOLD_PCT)
+
+        # Transaction Fees (tiered)
+        tf = config_data.get("transaction_fees", {})
+        self.PRIORITY_FEE_BUY = tf.get("priority_fee_buy", self.PRIORITY_FEE_BUY)
+        self.PRIORITY_FEE_SELL = tf.get("priority_fee_sell", self.PRIORITY_FEE_SELL)
+        self.PRIORITY_FEE_DUST = tf.get("priority_fee_dust", self.PRIORITY_FEE_DUST)
+        self.SLIPPAGE_BUY_PCT = tf.get("slippage_buy_pct", self.SLIPPAGE_BUY_PCT)
+        self.SLIPPAGE_SELL_PCT = tf.get("slippage_sell_pct", self.SLIPPAGE_SELL_PCT)
+        self.SLIPPAGE_SELL_EMERGENCY_PCT = tf.get("slippage_sell_emergency_pct", self.SLIPPAGE_SELL_EMERGENCY_PCT)
         
         # Discovery
         dy = config_data.get("discovery", {})

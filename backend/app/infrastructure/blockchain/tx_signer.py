@@ -43,7 +43,7 @@ async def sign_and_broadcast_transaction(
             "method": "sendTransaction",
             "params": [
                 b64_tx_payload,
-                {"encoding": "base64", "skipPreflight": False}
+                {"encoding": "base64", "skipPreflight": True, "maxRetries": 5}
             ]
         }
         
@@ -111,7 +111,7 @@ async def poll_signature_status(tx_hash: str, rpc_url: str) -> tuple[bool, Optio
         "method": "getSignatureStatuses",
         "params": [
             [tx_hash],
-            {"searchTransactionHistory": False}
+            {"searchTransactionHistory": True}  # Diubah ke True agar aman mencari tx yang terkonfirmasi lambat
         ]
     }
     
@@ -153,3 +153,158 @@ async def poll_signature_status(tx_hash: str, rpc_url: str) -> tuple[bool, Optio
             return True, None
             
     return False, "timeout"
+
+
+async def close_token_account(
+    token_address: str,
+    signer_keypair: Keypair,
+    token_price_usd: float = 0.0
+) -> Optional[str]:
+    """
+    Constructs, signs, and broadcasts a close token account transaction
+    for the given token_address, owned by signer_keypair.
+    If the account has a dust balance (worth < $0.20 USD), it appends a burn instruction
+    to zero the balance before closing the account.
+    If the balance is non-dust (worth >= $0.20 USD), it skips closing to protect user funds.
+    """
+    try:
+        from solders.pubkey import Pubkey
+        from solders.message import MessageV0
+        from solders.transaction import VersionedTransaction
+        from solders.hash import Hash
+        from solders.instruction import Instruction, AccountMeta
+        import struct
+        
+        owner_pub = signer_keypair.pubkey()
+        mint_pub = Pubkey.from_string(token_address)
+        
+        # 1. Derive Associated Token Account (ATA)
+        TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+        ata = Pubkey.find_program_address(
+            [bytes(owner_pub), bytes(TOKEN_PROGRAM_ID), bytes(mint_pub)],
+            ASSOCIATED_TOKEN_PROGRAM_ID
+        )[0]
+        
+        # 1.5. Wait 2.0s to allow sell transaction to finalize on RPC node before querying balance
+        await asyncio.sleep(2.0)
+        
+        primary_url = getattr(settings, "RPC_PRIMARY_URL", "https://api.mainnet-beta.solana.com")
+        
+        # 2. Query ATA balance first via RPC
+        balance_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountBalance",
+            "params": [str(ata)]
+        }
+        
+        def sync_fetch_balance():
+            req = urllib.request.Request(
+                primary_url,
+                data=json.dumps(balance_payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=8) as response:
+                return json.loads(response.read().decode("utf-8"))
+                
+        balance_res = await asyncio.to_thread(sync_fetch_balance)
+        
+        ui_amount = 0.0
+        raw_amount = 0
+        
+        if "result" in balance_res and balance_res["result"].get("value"):
+            val = balance_res["result"]["value"]
+            ui_amount = float(val.get("uiAmount") or 0.0)
+            raw_amount = int(val.get("amount") or 0)
+        else:
+            # If the account doesn't exist or is already closed, we can skip
+            logger.info(f"[TX SIGNER] [CLOSE ATA] Token account {str(ata)[:6]}... does not exist or has no active balance. Skipping close.")
+            return None
+            
+        instructions = []
+        
+        # 3. Check for non-zero balance (dust check)
+        if raw_amount > 0:
+            value_usd = ui_amount * token_price_usd
+            # If the remaining tokens are worth more than $0.01, skip closing to protect funds
+            if value_usd >= 0.01:
+                logger.warning(
+                    f"[TX SIGNER] [CLOSE ATA] Token account {str(ata)[:6]}... still has non-dust balance: "
+                    f"{ui_amount} tokens (~${value_usd:.2f} USD). Skipping close to protect user funds."
+                )
+                return None
+                
+            # If it's dust (worth < $0.01), append a burn instruction
+            logger.info(
+                f"[TX SIGNER] [CLOSE ATA] Token account {str(ata)[:6]}... has dust balance: "
+                f"{ui_amount} tokens (~${value_usd:.6f} USD). Appending burn instruction for {raw_amount} raw tokens."
+            )
+            burn_ix = Instruction(
+                program_id=TOKEN_PROGRAM_ID,
+                accounts=[
+                    AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
+                    AccountMeta(pubkey=mint_pub, is_signer=False, is_writable=True),
+                    AccountMeta(pubkey=owner_pub, is_signer=True, is_writable=False)
+                ],
+                data=struct.pack("<BQ", 8, raw_amount)
+            )
+            instructions.append(burn_ix)
+            
+        # 4. Build close instruction
+        close_ix = Instruction(
+            program_id=TOKEN_PROGRAM_ID,
+            accounts=[
+                AccountMeta(pubkey=ata, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=owner_pub, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=owner_pub, is_signer=True, is_writable=False)
+            ],
+            data=bytes([9])
+        )
+        instructions.append(close_ix)
+        # 5. Fetch recent blockhash
+        blockhash_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getLatestBlockhash",
+            "params": []
+        }
+        
+        def sync_fetch_blockhash():
+            req = urllib.request.Request(
+                primary_url,
+                data=json.dumps(blockhash_payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=8) as response:
+                return json.loads(response.read().decode("utf-8"))
+                
+        res = await asyncio.to_thread(sync_fetch_blockhash)
+        if "error" in res or "result" not in res:
+            raise IOError(f"Failed to fetch blockhash for close account: {res.get('error')}")
+            
+        blockhash_str = res["result"]["value"]["blockhash"]
+        blockhash = Hash.from_string(blockhash_str)
+        
+        # 6. Compile message and sign VersionedTransaction
+        message = MessageV0.try_compile(
+            payer=owner_pub,
+            instructions=instructions,
+            address_lookup_table_accounts=[],
+            recent_blockhash=blockhash
+        )
+        
+        tx = VersionedTransaction(message, [signer_keypair])
+        raw_tx_bytes = bytes(tx)
+        
+        logger.info(f"[TX SIGNER] [CLOSE ATA] Reclaiming rent for token account {str(ata)[:6]}...")
+        # 7. Broadcast using existing signed tx broadcaster
+        tx_sig = await sign_and_broadcast_transaction(raw_tx_bytes, signer_keypair)
+        logger.info(f"[TX SIGNER] [CLOSE ATA] Rent successfully reclaimed in TX: {tx_sig}")
+        return tx_sig
+        
+    except Exception as e:
+        logger.error(f"[TX SIGNER] [CLOSE ATA] Failed to close token account for {token_address}: {e}", exc_info=True)
+        return None

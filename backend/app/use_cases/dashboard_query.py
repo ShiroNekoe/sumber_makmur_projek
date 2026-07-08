@@ -22,10 +22,50 @@ logger = logging.getLogger(__name__)
 _signal_log: List[dict] = []
 _MAX_SIGNAL_LOG = 500
 
+# Dedup window: satu token hanya muncul sekali per 30 menit di signal log
+_SIGNAL_DEDUP_WINDOW_MINUTES = 30
+# Token -> last_signal_timestamp (untuk dedup)
+_signal_token_last_seen: dict = {}
+
 
 def append_signal_event(event: dict) -> None:
-    """Called by SafetyCheckGate to record a signal event for dashboard queries."""
-    global _signal_log
+    """Called by SafetyCheckGate to record a signal event for dashboard queries.
+    
+    Dedup: token yang sama tidak akan ditambahkan lebih dari sekali
+    per SIGNAL_DEDUP_WINDOW_MINUTES menit, menghindari banjir sinyal duplikat
+    dari banyak wallet yang beli token yang sama.
+    """
+    global _signal_log, _signal_token_last_seen
+
+    token_mint = event.get("token_address") or event.get("token_mint") or ""
+    now_ts = datetime.now(timezone.utc)
+
+    if token_mint:
+        last_seen = _signal_token_last_seen.get(token_mint)
+        if last_seen:
+            # Normalisasi timezone
+            if isinstance(last_seen, str):
+                try:
+                    last_seen = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                except Exception:
+                    last_seen = None
+            if last_seen and last_seen.tzinfo is None:
+                last_seen = last_seen.replace(tzinfo=timezone.utc)
+
+            if last_seen and (now_ts - last_seen).total_seconds() < (_SIGNAL_DEDUP_WINDOW_MINUTES * 60):
+                # Token sudah tampil baru-baru ini — skip duplikat
+                logger.debug(
+                    f"[SIGNAL LOG] Dedup: token {token_mint[:12]}... sudah muncul "
+                    f"{(now_ts - last_seen).total_seconds()/60:.1f} menit lalu. Diabaikan."
+                )
+                return
+
+        _signal_token_last_seen[token_mint] = now_ts
+
+    # Tambahkan timestamp bila belum ada
+    if "timestamp" not in event:
+        event["timestamp"] = now_ts.isoformat()
+
     _signal_log.append(event)
     if len(_signal_log) > _MAX_SIGNAL_LOG:
         _signal_log = _signal_log[-_MAX_SIGNAL_LOG:]
@@ -57,18 +97,29 @@ class DashboardQueryService:
     async def get_recent_signals(self, hours: int = 24) -> List[dict]:
         """
         Return signals from the in-memory log within the specified time window.
+        Returns only UNIQUE tokens (no duplicate token_address) — jika token yang
+        sama muncul lebih dari sekali, hanya ambil yang paling baru.
         Falls back to empty list on error (non-blocking).
         """
         try:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            seen_tokens: set = set()
             result = []
+            # Reversed: prioritaskan sinyal terbaru
             for event in reversed(get_all_signal_events()):
                 try:
                     ts_str = event.get("timestamp", "")
                     if ts_str:
                         ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                        if ts >= cutoff:
-                            result.append(event)
+                        if ts < cutoff:
+                            continue  # Lewati sinyal terlalu lama
+                    # Dedup berdasarkan token_address
+                    token = event.get("token_address") or event.get("token_mint") or ""
+                    if token and token in seen_tokens:
+                        continue  # Sudah ada sinyal terbaru untuk token ini
+                    if token:
+                        seen_tokens.add(token)
+                    result.append(event)
                 except Exception:
                     result.append(event)  # Include if can't parse timestamp
             return result

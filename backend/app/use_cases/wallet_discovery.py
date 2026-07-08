@@ -80,6 +80,22 @@ class WalletDiscoveryService:
         if not token_address or not wallet_source:
             return
 
+        # Guard: Only analyze tokens within the allowed age window.
+        # token_age_minutes is set by HardFilter. If it's missing or too old, skip entirely.
+        token_age = event.get("token_age_minutes")
+        if token_age is None or token_age > settings.MAX_TOKEN_AGE_MINUTES:
+            logger.debug(
+                f"[WALLET DISCOVERY] Skipping {token_address[:10]}... "
+                f"(age {token_age}m > limit {settings.MAX_TOKEN_AGE_MINUTES}m)"
+            )
+            return
+        if token_age < settings.MIN_TOKEN_AGE_MINUTES:
+            logger.debug(
+                f"[WALLET DISCOVERY] Skipping {token_address[:10]}... "
+                f"(age {token_age}m < min {settings.MIN_TOKEN_AGE_MINUTES}m)"
+            )
+            return
+
         logger.info(f"[WALLET DISCOVERY] Analyzing token {token_address} trading window ±10m around whale {wallet_source}")
 
         # Check if running in simulation/offline mode

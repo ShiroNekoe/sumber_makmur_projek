@@ -37,7 +37,8 @@ class TestWalletDiscoveryService(unittest.IsolatedAsyncioTestCase):
             "token_mint": "EKpQGSJtjMFqKZ9KQGWjhoxjq2WqU1AF9Z23J1x584",
             "amount_usd": 1500.00,
             "signature": "sim_signature_123",
-            "timestamp_utc": datetime.now(timezone.utc)
+            "timestamp_utc": datetime.now(timezone.utc),
+            "token_age_minutes": 60.0  # Within valid window (30–120m)
         }
 
         # Queue occurrences 3 times to trigger registration threshold

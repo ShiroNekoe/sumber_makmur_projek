@@ -13,7 +13,7 @@ async def execute_pumpportal_swap(
     amount: float,
     denominated_in_sol: bool = True,
     slippage: float = 5.0,
-    priority_fee: float = 0.003
+    priority_fee: float = 0.0001  # Default hemat — override dari caller jika perlu
 ) -> Optional[str]:
     """
     Infrastructure Layer: Real-Case PumpPortal Trade Executor.
@@ -21,7 +21,10 @@ async def execute_pumpportal_swap(
     Returns: transaction signature string on success, None on failure.
     """
     import sys
-    is_testing = ("pytest" in sys.modules or "unittest" in sys.modules)
+    is_testing = any("pytest" in arg or "unittest" in arg for arg in sys.argv) or "pytest" in sys.modules or "unittest" in sys.modules
+    # Force false if run via uvicorn/main.py entrypoint to avoid test discovery false positives
+    if any("uvicorn" in arg or "main.py" in arg for arg in sys.argv):
+        is_testing = False
     api_key = getattr(settings, "PUMP_FUN_API_KEY", None)
     if is_testing or not api_key or len(api_key.strip()) < 10 or api_key == "YOUR_PUMP_FUN_API_KEY":
         logger.info(f"[TRADING SERVICE] [PAPER TRADE] Simulating {action} of {amount} on {token_mint[:6]}...")
@@ -36,7 +39,7 @@ async def execute_pumpportal_swap(
         "denominatedInSol": "true" if denominated_in_sol else "false",
         "slippage": int(slippage),
         "priorityFee": priority_fee,
-        "pool": "pump"
+        "pool": "auto"
     }
 
     def sync_request():

@@ -173,6 +173,12 @@ class TriggerEngine(ITriggerEngine):
                 f"{age_minutes:.1f}m < {settings.MIN_TOKEN_AGE_MINUTES}m threshold."
             )
             return False
+        if age_minutes > settings.MAX_TOKEN_AGE_MINUTES:
+            logger.info(
+                f"[TRIGGER ENGINE] [REJECTED] Token {symbol} ({token_mint}) is too old: "
+                f"{age_minutes:.1f}m > {settings.MAX_TOKEN_AGE_MINUTES}m threshold."
+            )
+            return False
 
         # Liquidity check
         if liquidity_usd < settings.MIN_LIQUIDITY_USD:

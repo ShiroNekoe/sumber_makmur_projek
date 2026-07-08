@@ -1,0 +1,1513 @@
+
+--- Page 1 ---
+SOFTWARE REQUIREMENT SPECIFICATION  ·  TECHNICAL DESIGN DOCUMENT
+AI Smart Money
+Trading System
+Bagian 1–6: Analisis Dokumen, Analisis Aktor, Fitur Sistem, Use Case, User
+Journey, dan Desain Database — disusun dari Dokumentasi Arsitektur v2 dan
+Lampiran Teknis v2.1.
+Single-user system  ·  Operator tunggal sebagai seluruh aktor manusia
+Disusun berdasarkan: AI Smart Money Trading System — Dokumentasi Arsitektur v2 (Lastico)
+dan Lampiran Teknis — Spesifikasi Teknis & Rencana Penguatan Sistem v2.1
+Tanggal 21 June 2026
+
+--- Page 2 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 2
+DAFTAR ISI
+Struktur Dokumen
+Dokumen ini adalah lampiran lanjutan dari Dokumentasi Arsitektur v2 dan Lampiran Teknis v2.1 — bukan
+revisi, melainkan formalisasi ke format SRS/TDD untuk memudahkan tim pengembangan lintas peran (PM,
+BA, SA, UI/UX, Backend, Frontend, DevOps, QA, AI Engineer) memahami sistem dari satu dokumen yang
+sama.
+Bagian 1
+Analisis Dokumen
+Ringkasan sistem, masalah bisnis, stakeholder, functional & non-functional requirements.
+Bagian 2
+Analisis Aktor
+Aktor yang terlibat, hak akses, tanggung jawab, dan modul yang dapat diakses masing-masing.
+Bagian 3
+Fitur Sistem
+Daftar lengkap fitur per modul: tujuan, input, output, validasi, dan hak akses.
+Bagian 4
+Use Case
+Use case lengkap dengan pre-condition, main flow, alternative flow, exception flow, post-condition.
+Bagian 5
+User Journey
+Perjalanan operator menggunakan sistem dari hari pertama hingga operasional penuh.
+Bagian 6
+Desain Database
+ERD, struktur tabel, tipe data, constraint, dan relasi antar tabel.
+Cakupan dokumen ini: khusus untuk AI Smart Money Trading System sesuai dua dokumen sumber, bukan template
+generik. Sistem diasumsikan single-user — operator yang sama menjalankan, memantau, dan mengonfigurasi seluruh
+sistem. Informasi yang tidak tercakup di dokumen sumber ditandai eksplisit sebagai Asumsi Sistem di sepanjang
+dokumen.
+
+--- Page 3 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 3
+BAGIAN 1
+Analisis Dokumen
+Hasil analisis menyeluruh terhadap Dokumentasi Arsitektur v2 dan Lampiran Teknis v2.1, diringkas
+menjadi gambaran sistem dan kebutuhan bisnis yang dapat dipakai seluruh peran tim
+pengembangan sebagai titik awal yang sama.
+1.1 Ringkasan Sistem
+Aspek
+Keterangan
+Nama sistem
+AI Smart Money Trading System
+Tujuan sistem
+Mengotomatisasi deteksi sinyal trading meme coin berbasis pergerakan wallet "smart
+money" (whale wallet terpilih), memvalidasinya dengan model machine learning dan
+pengecekan keamanan token, lalu mengeksekusi entry/exit secara otomatis dengan tiga
+lapis proteksi risiko.
+Masalah bisnis yang
+diselesaikan
+Trading meme coin manual membutuhkan reaksi dalam hitungan detik terhadap pergerakan
+wallet dan risiko rug pull yang sangat tinggi (mayoritas token meme coin berakhir sebagai
+rug pull atau kehilangan likuiditas total) — kecepatan reaksi manusia tidak cukup untuk
+menangkap sinyal maupun menghindari kerugian dari rug yang terjadi dalam hitungan detik.
+Stakeholder yang terlibat
+Operator/pemilik sistem (single-user) sebagai satu-satunya pengguna manusia; secara
+tidak langsung, penyedia layanan eksternal (RPC node, pump.fun, DexScreener) sebagai
+pihak ketiga yang sistem bergantung padanya.
+Target pengguna
+Individu yang melakukan trading meme coin di ekosistem Solana/pump.fun dengan modal
+terbatas, dijalankan dari laptop pribadi (biasa/gaming) tanpa infrastruktur komputasi tinggi.
+1.2 Analisis Kebutuhan Bisnis
+1.2.1 Functional Requirements
+ID
+Deskripsi
+FR-01
+Sistem memantau aktivitas on-chain (swap, transfer, LP change) dari wallet target (Whale A & B) secara real-time
+melalui WebSocket subscription ke RPC node.
+FR-02
+Sistem menyaring event mentah dengan Rule-Based Classifier untuk membedakan aktivitas trading yang relevan
+dari transfer internal/top-up gas.
+FR-03
+Sistem menahan event dalam trigger window 5 menit dengan mode konfigurasi AND/OR sebelum diteruskan ke
+pipeline analisis.
+FR-04
+Sistem mengekstraksi fitur on-chain, historical wallet, dan market context lalu menjalankan inference menggunakan
+model XGBoost untuk menghasilkan direction, confidence score, dan target price.
+
+--- Page 4 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 4
+ID
+Deskripsi
+FR-05
+Sistem melakukan Token Safety Check (liquidity lock, kontrak verified, holder distribution) terhadap setiap output
+model sebelum alert dikirim.
+FR-06
+Sistem mengirim alert ke dashboard hanya jika confidence ≥ 75% DAN safety check lolos; sinyal lain tetap dicatat
+untuk dataset training.
+FR-07
+Sistem menghitung ukuran posisi (position size) berdasarkan risk per trade tetap 1% dari equity dan jarak stop-loss,
+lalu melakukan auto-entry via pump.fun API.
+FR-08
+Sistem menjalankan tiga lapis proteksi paralel selama posisi terbuka: price-based stop-loss, staged trailing
+take-profit, dan kill-switch on-chain.
+FR-09
+Sistem mencatat setiap posisi yang ditutup ke dataset closed_trades dengan label R-multiple dan exit_reason.
+FR-10
+Sistem menjalankan retrain model terjadwal setiap 24 jam (02:00 UTC) menggunakan data live closed trades,
+dengan rollback otomatis jika performa menurun.
+FR-11
+Sistem menyediakan dashboard web real-time (WebSocket push) untuk memantau wallet, sinyal, confidence
+history, dan trade log.
+FR-12
+Sistem menjalankan model bootstrap (v0) dari histori on-chain wallet sebelum 50 closed trades live terkumpul,
+sebagai dasar prediksi awal.
+FR-13
+Sistem mendukung dynamic wallet discovery untuk mengusulkan wallet baru yang konsisten profit pada token yang
+sama dengan watchlist existing (dengan approval manual).
+FR-14
+Sistem menerapkan hard filter token age dan liquidity floor sebelum event masuk trigger window, terpisah dari
+penggunaannya sebagai fitur model.
+FR-15
+Sistem menerapkan dedup dan cooldown per pasangan (wallet, token) untuk mencegah alert berulang dari satu
+keputusan trading yang sama.
+FR-16
+Sistem menyediakan RPC fallback (primary/secondary) agar monitoring tidak berhenti total saat satu provider RPC
+mengalami downtime.
+FR-17
+Sistem menerapkan batas jumlah posisi terbuka bersamaan (position correlation cap) untuk mencegah eksposur
+risiko menumpuk saat banyak sinyal muncul bersamaan.
+FR-18
+Sistem melakukan state persistence terhadap posisi terbuka, model aktif, dan watchlist, agar dapat di-restore
+otomatis setelah restart/crash.
+1.2.2 Non-Functional Requirements
+Kategori
+Deskripsi
+Security
+Private key wallet trading disimpan terenkripsi secara lokal, terpisah dari wallet utama operator; tidak
+pernah dikirim ke pihak ketiga atau disimpan dalam bentuk plaintext di file konfigurasi.
+Scalability
+Sistem dirancang untuk volume data kecil (puluhan–ratusan closed trades per 30 hari) dan dua wallet
+target; skalabilitas horizontal bukan kebutuhan utama pada versi ini — prioritasnya adalah berjalan
+stabil di hardware terbatas.
+
+--- Page 5 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 5
+Kategori
+Deskripsi
+Performance
+Evaluasi SL/trailing TP harus bereaksi dalam hitungan sub-detik terhadap perubahan harga; kill-switch
+on-chain harus event-driven (push, bukan polling) agar deteksi rug tidak kalah cepat dari pergerakan
+harga.
+Availability
+Sistem ditargetkan berjalan 24/7 di laptop pribadi; ketersediaan bergantung pada RPC fallback (B4)
+dan watchdog proses untuk auto-restart, bukan pada infrastruktur server redundan.
+Reliability
+Tiga lapis proteksi eksekusi harus tetap berfungsi independen satu sama lain; kegagalan satu lapis
+(misal RPC putus untuk kill-switch) tidak boleh menghentikan lapis lain (price-based SL tetap aktif).
+Maintainability
+Threshold dan parameter operasional (confidence threshold, trigger window, tier trailing TP, dsb)
+disimpan di satu file konfigurasi terpusat (config.yaml), bukan tersebar di kode, agar kalibrasi ulang
+tidak memerlukan redeploy.
+Auditability
+Setiap posisi closed mencatat exit_reason, confidence_score, dan model_version yang menghasilkan
+sinyal — memungkinkan audit retrospektif terhadap kualitas sinyal terpisah dari dampak rug pull
+eksternal.
+ASUMSI SISTEM
+Dokumen sumber tidak menyebutkan target SLA numerik (mis. "sistem harus merespons dalam X ms") maupun
+target uptime persentase. Non-functional requirements di atas disusun sebagai prinsip kualitatif yang konsisten
+dengan filosofi dokumen sumber ("event-driven, bukan polling"; "hardware terbatas"), bukan angka SLA formal —
+angka konkret memerlukan keputusan operator berdasarkan hasil pengujian live.
+
+--- Page 6 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 6
+BAGIAN 2
+Analisis Aktor
+Sistem ini bersifat single-user — seluruh peran manusia dipegang oleh satu aktor (Operator). Selain
+itu, terdapat aktor non-manusia (sistem otomatis) yang bertindak atas nama Operator berdasarkan
+konfigurasi yang ditetapkan, serta beberapa aktor eksternal yang berinteraksi dengan sistem tanpa
+dikendalikan olehnya.
+ASUMSI SISTEM
+Dokumen sumber tidak menyebutkan aktor manusia selain pemilik sistem. Bagian ini mengasumsikan model
+single-user sesuai instruksi: tidak ada admin, operator kedua, atau peran approval terpisah — satu orang yang sama
+mengonfigurasi, memantau, dan mengambil keputusan override manual.
+2.1 Operator (Aktor Manusia Tunggal)
+Aspek
+Keterangan
+Deskripsi
+Pemilik dan satu-satunya pengguna manusia sistem. Bertindak sebagai perancang konfigurasi,
+pengawas dashboard, dan pihak yang melakukan approval manual untuk keputusan yang sengaja
+tidak diotomasi penuh.
+Hak akses
+Akses penuh ke seluruh modul: dashboard, konfigurasi threshold (config.yaml), watchlist wallet,
+riwayat trade, dan kontrol start/stop sistem.
+Tanggung jawab
+Menentukan parameter risiko awal (risk per trade, batas posisi terbuka/N pada Position Correlation
+Cap); approve atau reject kandidat wallet dari Dynamic Wallet Discovery (B1); memantau notifikasi
+darurat (kill-switch, circuit breaker) dan melakukan intervensi manual jika diperlukan; menyimpan
+dan mengamankan private key wallet trading.
+Modul yang dapat
+diakses
+Dashboard Alert Engine (04), Wallet Monitor, Trade Log, Confidence History, Konfigurasi Terpusat
+(A4), Watchlist Management (termasuk approval auto-discovered wallet, B1), kontrol sistem
+(start/stop/pause).
+2.2 Aktor Non-Manusia (Sistem Otomatis)
+Tiga komponen sistem bertindak otonom dalam batas yang dikonfigurasi Operator, tanpa memerlukan
+persetujuan manual per kejadian. Diperlakukan sebagai "aktor" karena masing-masing memiliki hak akses dan
+tanggung jawab tersendiri terhadap modul sistem.
+Aktor Sistem
+Tanggung Jawab
+Modul yang Diakses
+Trigger & ML
+Pipeline
+(Layer 1–2)
+Menyaring event on-chain, menjalankan inference
+XGBoost, dan menentukan apakah sinyal lolos ke
+decision gate.
+Rule-Based Classifier, Feature
+Extraction, XGBoost Inference Engine,
+Token Safety Check
+
+--- Page 7 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 7
+Eksekusi Otomatis
+(Lapis 1–3)
+Mengeksekusi entry/exit secara otonom berdasarkan SL,
+trailing TP, dan kill-switch on-chain — tanpa menunggu
+konfirmasi Operator per transaksi.
+pump.fun API (entry/exit), RPC
+WebSocket (kill-switch), position sizing
+Retrain Scheduler
+(Layer 4)
+Menjalankan retrain model setiap 24 jam, mengevaluasi
+expectancy(R), dan melakukan rollback otomatis jika
+model baru lebih buruk dari model aktif.
+model_registry, closed_trades dataset,
+Model v0 Bootstrap
+2.3 Aktor Eksternal (Pihak Ketiga)
+Sistem bergantung pada layanan eksternal yang tidak dikendalikan Operator maupun sistem itu sendiri.
+Diperlakukan sebagai aktor karena perilakunya (downtime, rate limit, perubahan API) langsung memengaruhi
+jalannya sistem.
+Aktor Eksternal
+Peran terhadap Sistem
+Whale Wallet A & B
+Sumber sinyal utama. Sistem bereaksi terhadap aktivitas mereka, tanpa kendali atau
+komunikasi langsung terhadap pemilik wallet tersebut.
+RPC Node Provider
+(primary/secondary)
+Menyediakan akses real-time ke data on-chain Solana melalui WebSocket subscription.
+Downtime atau rate limit pada provider ini langsung berdampak pada kemampuan deteksi
+sinyal dan kill-switch.
+pump.fun API
+Menyediakan eksekusi order (entry/exit) dan quote untuk deteksi slippage. Kegagalan API
+ini adalah titik kegagalan paling kritis karena berdampak langsung pada kemampuan
+menutup posisi.
+DexScreener / Block Explorer
+API
+Menyediakan data Token Safety Check (liquidity lock, kontrak verified, holder distribution).
+Kegagalan menyebabkan sistem fail-closed (alert diblokir, bukan diloloskan).
+Dev/Creator Wallet token target
+Aktivitas wallet ini (jual besar, LP removal) menjadi salah satu trigger utama kill-switch Lapis
+3 — bersifat adversarial terhadap posisi yang dipegang sistem.
+
+--- Page 8 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 8
+BAGIAN 3
+Fitur Sistem
+Daftar fitur dikelompokkan ke dalam enam modul, sejajar dengan layer arsitektur pada dokumen
+sumber. Setiap fitur dijelaskan tujuan, deskripsi, input, output, validasi, dan hak akses — seluruhnya
+dijalankan oleh aktor sistem otomatis kecuali disebutkan memerlukan Operator.
+3.1 Modul Wallet Monitoring
+Real-Time Wallet Listener
+Aspek
+Keterangan
+Tujuan
+Mendeteksi aktivitas on-chain dari wallet target tanpa delay polling.
+Deskripsi
+Subscribe ke RPC node via WebSocket (logsSubscribe/accountSubscribe) untuk menangkap swap,
+transfer, dan LP change dari Whale A & B secara langsung begitu transaksi terkonfirmasi di chain.
+Input
+Alamat wallet target (dari watchlist_wallets), koneksi WebSocket RPC aktif.
+Output
+Event mentah (signature transaksi, instruction type, token mint, jumlah, wallet pengirim/penerima)
+diteruskan ke Rule-Based Classifier.
+Validasi
+Event harus berasal dari wallet yang status active=TRUE di watchlist_wallets.
+Hak akses
+Sistem otomatis (Layer 0). Operator dapat melihat status koneksi di dashboard.
+Rule-Based Classifier (Filter Relevansi)
+Aspek
+Keterangan
+Tujuan
+Memisahkan aktivitas trading yang relevan dari noise (transfer internal, top-up gas).
+Deskripsi
+Mengevaluasi event terhadap daftar alamat router DEX publik yang dikenal dan threshold nilai transaksi
+sederhana untuk menentukan apakah event layak diteruskan ke trigger window.
+Input
+Event mentah dari Wallet Listener.
+Output
+Keputusan biner: diteruskan ke Trigger Window, atau diabaikan sepenuhnya (tidak masuk dataset
+training sama sekali).
+Validasi
+Event harus menyentuh alamat router DEX dikenal DAN nilai transaksi di atas threshold minimum
+(dikonfigurasi di config.yaml).
+Hak akses
+Sistem otomatis (Layer 0/1).
+
+--- Page 9 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 9
+Dynamic Wallet Discovery
+Aspek
+Keterangan
+Tujuan
+Mengusulkan wallet baru yang konsisten profit pada token yang sama dengan watchlist.
+Deskripsi
+Mencatat wallet eksternal yang muncul berulang (≥3 kali, dikonfigurasi) pada token yang sama dengan
+Whale A/B dalam window waktu berdekatan (±10 menit) dan exit dengan profit terverifikasi, lalu
+menandainya sebagai kandidat di watchlist_wallets.
+Input
+Histori transaksi token yang sama dengan wallet existing, data closed-price pasca-exit.
+Output
+Baris baru di watchlist_wallets dengan source='auto_discovered', status awal belum aktif.
+Validasi
+Kandidat tidak otomatis aktif — wajib melalui approval manual Operator di dashboard sebelum
+disetarakan dengan Whale A/B.
+Hak akses
+Sistem otomatis mengusulkan; Operator melakukan approve/reject.
+3.2 Modul Trigger & ML Pipeline
+Trigger Window Engine
+Aspek
+Keterangan
+Tujuan
+Menahan event sampai kondisi window waktu terpenuhi sebelum memicu analisis.
+Deskripsi
+Menampung event yang lolos Filter Relevansi dalam window 5 menit (dikonfigurasi), memeriksa apakah
+kondisi mode AND (kedua wallet bergerak) atau OR (salah satu cukup) terpenuhi.
+Input
+Event yang lolos Rule-Based Classifier, konfigurasi mode AND/OR dari config.yaml.
+Output
+Fire event ke Feature Extraction jika kondisi terpenuhi; reset window dan lanjut monitor jika tidak.
+Validasi
+Window direset jika kondisi trigger tidak terpenuhi dalam batas waktu yang ditentukan.
+Hak akses
+Sistem otomatis (Layer 1).
+
+--- Page 10 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 10
+Token Age & Liquidity Floor Filter
+Aspek
+Keterangan
+Tujuan
+Hard filter token terlalu baru/tidak likuid sebelum masuk pipeline ML.
+Deskripsi
+Mengevaluasi token age dan liquidity pool depth terhadap ambang minimum sebelum event diteruskan
+ke trigger window — token di bawah ambang diabaikan total, terpisah dari penggunaan token age
+sebagai fitur model.
+Input
+Token age (menit), liquidity pool depth saat ini.
+Output
+Event diteruskan jika di atas ambang; diabaikan total (tidak masuk dataset) jika di bawah ambang.
+Validasi
+Ambang minimum dikalibrasi dari data live, disimpan di config.yaml.
+Hak akses
+Sistem otomatis (Layer 1).
+Dedup & Cooldown per (Wallet, Token)
+Aspek
+Keterangan
+Tujuan
+Mencegah alert berulang dari satu keputusan trading whale yang sama.
+Deskripsi
+Memeriksa pasangan (wallet_address, token_address) terhadap cooldown table; jika sudah memicu
+trigger dalam window cooldown, event baru diabaikan untuk trigger baru namun tetap memperbarui
+posisi yang sudah dipantau.
+Input
+Event yang lolos Filter Relevansi, cooldown table (key + timestamp).
+Output
+Event diteruskan ke Trigger Window jika di luar cooldown; diabaikan untuk tujuan trigger baru jika masih
+dalam cooldown.
+Validasi
+Cooldown reset otomatis begitu posisi terkait token tersebut closed.
+Hak akses
+Sistem otomatis (Layer 1).
+Feature Extraction
+Aspek
+Keterangan
+Tujuan
+Menyiapkan fitur input untuk model XGBoost dari tiga sumber data.
+Deskripsi
+Menggabungkan on-chain signals (ukuran posisi, token age, liquidity depth, slippage, cluster score),
+historical wallet (win rate 30 hari, average holding time, typical trade size, past exit pattern), dan market
+context (SOL/USD momentum, volume/liquidity ratio, hour of day, trending count).
+Input
+Event yang lolos Trigger Window.
+Output
+Feature vector lengkap untuk XGBoost Inference Engine.
+Validasi
+Seluruh fitur wajib tersedia; fitur yang gagal diambil (mis. API timeout) menyebabkan sinyal tidak dapat
+dievaluasi (fail-closed).
+Hak akses
+Sistem otomatis (Layer 2).
+
+--- Page 11 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 11
+XGBoost Inference Engine
+Aspek
+Keterangan
+Tujuan
+Menghasilkan prediksi direction, confidence, dan target price dari feature vector.
+Deskripsi
+Menjalankan model XGBoost classifier (n_estimators=300, max_depth=6, learning_rate=0.05) terhadap
+feature vector, menghasilkan output multi-class.
+Input
+Feature vector dari Feature Extraction, model aktif dari model_registry.
+Output
+Direction (BUY/SELL/HOLD), confidence score (0.0–1.0), target price estimate (±% dari harga saat ini).
+Validasi
+Model yang dipakai harus is_active=TRUE di model_registry; sebelum 50 closed trades live, yang dipakai
+adalah Model v0 Bootstrap.
+Hak akses
+Sistem otomatis (Layer 2).
+Token Safety Check
+Aspek
+Keterangan
+Tujuan
+Memvalidasi keamanan token secara independen dari confidence model.
+Deskripsi
+Memeriksa liquidity locked/burned, status verifikasi kontrak, top-10 holder percentage, dan status mint
+authority melalui API publik (DexScreener/block explorer).
+Input
+Token address dari sinyal yang sedang dievaluasi.
+Output
+Keputusan biner lolos/gagal; jika gagal, alert diblokir terlepas dari confidence score.
+Validasi
+Default fail-closed: jika API tidak merespons, safety check dianggap gagal, bukan lolos otomatis.
+Hak akses
+Sistem otomatis (Layer 2/3).
+
+--- Page 12 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 12
+3.3 Modul Decision Gate & Dashboard
+Confidence Threshold Gate
+Aspek
+Keterangan
+Tujuan
+Menentukan apakah sinyal layak memicu alert ke Operator.
+Deskripsi
+Memeriksa apakah confidence score ≥ 75% (dikonfigurasi) DAN Token Safety Check lolos; jika keduanya
+terpenuhi, alert dikirim, jika tidak, sinyal tetap dicatat sebagai log-only untuk dataset training.
+Input
+Confidence score dari XGBoost Inference Engine, hasil Token Safety Check.
+Output
+Alert ke dashboard (jika lolos) atau entri log-only ke dataset (jika tidak).
+Validasi
+Tidak ada sinyal yang dibuang — seluruh sinyal tercatat, hanya berbeda apakah memicu alert atau tidak.
+Hak akses
+Sistem otomatis (Layer 3).
+Web Dashboard Alert Engine
+Aspek
+Keterangan
+Tujuan
+Antarmuka utama Operator untuk memantau sistem secara real-time.
+Deskripsi
+Menampilkan wallet monitor, live signal feed, confidence score & history 24 jam, trade log, dan ringkasan
+statistik harian (win rate, triggers hari ini, alerts fired) — menerima data via WebSocket push,
+browser-based tanpa aplikasi mobile.
+Input
+Seluruh event dan hasil dari Layer 0–4 yang relevan untuk ditampilkan.
+Output
+Tampilan real-time tanpa perlu refresh manual.
+Validasi
+Tidak ada validasi input — modul ini bersifat read-only/observasional bagi Operator pada versi ini.
+Hak akses
+Operator (akses penuh, read-only terhadap data live).
+3.4 Modul Eksekusi Otomatis
+
+--- Page 13 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 13
+Position Sizing & Auto-Entry
+Aspek
+Keterangan
+Tujuan
+Menghitung ukuran posisi dan mengeksekusi entry otomatis via pump.fun API.
+Deskripsi
+Menghitung position_size_usd dari risk_pct_per_trade (default 1%) dibagi jarak SL, lalu mengirim order
+beli melalui pump.fun API begitu sinyal lolos Confidence Threshold Gate.
+Input
+Sinyal yang lolos alert, risk_pct dari config.yaml, harga & jarak SL awal.
+Output
+Order entry terkonfirmasi (status OPEN) atau gagal (status FAILED_ENTRY) setelah retry habis.
+Validasi
+Position Correlation Cap (lihat di bawah) harus belum tercapai sebelum entry baru dieksekusi.
+Hak akses
+Sistem otomatis (Eksekusi Otomatis).
+Position Correlation Cap
+Aspek
+Keterangan
+Tujuan
+Mencegah eksposur risiko menumpuk dari banyak sinyal berkorelasi yang muncul bersamaan.
+Deskripsi
+Memeriksa jumlah posisi aktif (status OPEN) terhadap batas maksimum N yang ditentukan Operator
+sebelum auto-entry baru dieksekusi; sinyal yang melebihi batas tetap dicatat namun tidak dieksekusi.
+Input
+Jumlah baris open_positions saat ini, batas N dari konfigurasi Operator.
+Output
+Izin entry (jika di bawah batas) atau penolakan entry dengan log sinyal (jika di batas).
+Validasi
+Batas N adalah keputusan risk tolerance Operator, bukan nilai default sistem.
+Hak akses
+Sistem otomatis mengevaluasi; Operator menentukan nilai N.
+Lapis 1 — Price-Based Stop Loss
+Aspek
+Keterangan
+Tujuan
+Baseline proteksi rugi yang selalu aktif sejak posisi terbuka.
+Deskripsi
+Memantau harga posisi terbuka; begitu harga menyentuh level -1R dari entry, mengirim exit market order
+segera.
+Input
+Harga real-time posisi, sl_initial dari entry.
+Output
+Exit market order dengan exit_reason='SL' jika tersentuh.
+Validasi
+Berjalan independen dari Lapis 2 dan 3 — tidak bergantung pada koneksi RPC websocket.
+Hak akses
+Sistem otomatis (Eksekusi Otomatis, Lapis 1).
+
+--- Page 14 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 14
+Lapis 2 — Staged Trailing Take-Profit
+Aspek
+Keterangan
+Tujuan
+Mengunci profit secara bertingkat tanpa memotong potensi winner besar terlalu cepat.
+Deskripsi
+Mengaktifkan trailing level mengikuti puncak harga begitu profit melewati +1R, dengan jarak trail yang
+mengetat sesuai tier R yang dicapai (25% pada +2R–5R, 15% pada +5R–10R, 10% pada >+10R).
+Input
+Harga real-time, peak_r_multiple yang tercapai, konfigurasi tier dari config.yaml.
+Output
+Exit market order dengan exit_reason='trailing_tp' jika trailing level tersentuh.
+Validasi
+Trailing level hanya dapat naik, tidak pernah turun, mengikuti puncak tertinggi yang pernah dicapai.
+Hak akses
+Sistem otomatis (Eksekusi Otomatis, Lapis 2).
+Lapis 3 — On-Chain Kill-Switch
+Aspek
+Keterangan
+Tujuan
+Mendeteksi indikasi rug langsung dari event on-chain, independen dari harga.
+Deskripsi
+Subscribe real-time ke event LP removal/burn, dev wallet sell besar, slippage quote melonjak, dan holder
+concentration shift; begitu salah satu trigger, mengirim exit market order dengan prioritas tertinggi,
+override Lapis 1 dan 2.
+Input
+Event on-chain real-time dari RPC WebSocket, threshold dari config.yaml.
+Output
+Exit market order dengan exit_reason salah satu dari kill_switch_lp / kill_switch_dev_dump /
+kill_switch_slippage.
+Validasi
+Berjalan di thread/proses terpisah dengan prioritas tertinggi; tidak menunggu giliran evaluasi Lapis 1/2.
+Hak akses
+Sistem otomatis (Eksekusi Otomatis, Lapis 3).
+
+--- Page 15 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 15
+3.5 Modul Dataset & Retrain
+Closed Trade Logger
+Aspek
+Keterangan
+Tujuan
+Mencatat setiap posisi yang ditutup sebagai satu baris data training.
+Deskripsi
+Menulis hasil akhir posisi (entry/exit price, PnL aktual, R-multiple, exit_reason, holding time,
+model_version) ke tabel closed_trades begitu posisi mencapai status CLOSED.
+Input
+Data posisi dari status EXITING yang berhasil fill.
+Output
+Satu baris baru di closed_trades, dengan label (BUY_BENAR/SALAH/HOLD) turunan dari r_multiple.
+Validasi
+Baik paper trade maupun live trade tetap masuk dataset, dibedakan oleh is_paper_trade.
+Hak akses
+Sistem otomatis (Layer 4).
+24h Retrain Scheduler
+Aspek
+Keterangan
+Tujuan
+Melatih ulang model secara terjadwal menggunakan data live, dengan jaring pengaman.
+Deskripsi
+Menjalankan training XGBoost baru setiap 02:00 UTC menggunakan rolling window 30 hari data
+closed_trades, lalu mengevaluasi expectancy(R) dan validation accuracy dibanding model aktif sebelum
+menggantikannya.
+Input
+Dataset closed_trades 30 hari terakhir, model aktif saat ini dari model_registry.
+Output
+Model baru di model_registry (is_active=TRUE jika lolos, rolled_back=TRUE jika ditolak).
+Validasi
+Minimum 100–150 closed trades, atau 50 dengan minimal 15–20 berlabel BUY_BENAR; rollback jika
+validation accuracy turun >5% atau expectancy berubah positif ke negatif.
+Hak akses
+Sistem otomatis (Layer 4).
+
+--- Page 16 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 16
+Model v0 Bootstrap
+Aspek
+Keterangan
+Tujuan
+Menyediakan dasar prediksi yang valid sejak hari pertama sistem berjalan.
+Deskripsi
+Melatih model awal dari rekonstruksi histori transaksi wallet target (bukan data live sistem sendiri)
+sebelum 50 closed trades live terkumpul.
+Input
+Histori transaksi Whale A/B dari block explorer publik, label hasil rekonstruksi pergerakan harga riil
+pasca-transaksi.
+Output
+Model v0 di model_registry, dipakai XGBoost Inference Engine sampai data live cukup.
+Validasi
+Digantikan otomatis oleh model v1 begitu syarat minimum closed trades live tercapai.
+Hak akses
+Sistem otomatis (Layer 4).
+3.6 Modul Konfigurasi & Watchlist
+Konfigurasi Terpusat (config.yaml)
+Aspek
+Keterangan
+Tujuan
+Satu sumber kebenaran untuk seluruh threshold operasional sistem.
+Deskripsi
+Menyimpan parameter trigger window, confidence threshold, risk per trade, tier trailing TP, threshold
+labeling, jadwal retrain, dan threshold kill-switch dalam satu file YAML yang dapat diubah tanpa redeploy
+kode.
+Input
+Perubahan manual oleh Operator.
+Output
+Parameter aktif yang dibaca seluruh modul sistem saat runtime.
+Validasi
+Nilai kosong (mis. dev_wallet_sell_threshold_pct) wajib dikalibrasi dari data live sebelum dipakai dalam
+keputusan otomatis.
+Hak akses
+Operator (satu-satunya pihak yang mengubah file ini).
+
+--- Page 17 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 17
+Watchlist Management
+Aspek
+Keterangan
+Tujuan
+Mengelola daftar wallet yang dipantau sistem.
+Deskripsi
+Menyimpan dan menampilkan Whale A & B (manual) serta wallet hasil Dynamic Wallet Discovery
+(auto_discovered) di tabel watchlist_wallets, dengan kemampuan mengaktifkan/menonaktifkan tanpa
+menghapus histori.
+Input
+Approval/rejection Operator terhadap kandidat auto-discovered.
+Output
+Daftar wallet aktif yang dipantau Wallet Listener.
+Validasi
+Wallet auto_discovered tidak aktif secara default sampai disetujui Operator.
+Hak akses
+Operator (approval); sistem otomatis (penambahan kandidat).
+
+--- Page 18 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 18
+BAGIAN 4
+Use Case
+Sembilan use case utama yang mencakup siklus penuh sistem: dari deteksi sinyal hingga retrain
+model, termasuk jalur kegagalan kritis (kill-switch gagal exit, crash recovery) yang menjadi gap paling
+sensitif pada sistem trading otomatis dengan uang riil.
+UC-01 — Deteksi Sinyal dan Eksekusi Entry Otomatis
+Aspek
+Keterangan
+Aktor
+Sistem Otomatis (Trigger & ML Pipeline, Eksekusi Otomatis)
+Tujuan
+Mendeteksi pergerakan wallet target, memvalidasinya melalui ML dan safety check, lalu membuka
+posisi secara otomatis jika seluruh syarat terpenuhi.
+Pre-condition
+Wallet A/B aktif di watchlist; RPC WebSocket terhubung; model aktif tersedia di model_registry;
+Position Correlation Cap belum tercapai.
+Main Flow
+1. Wallet Listener mendeteksi event on-chain dari Whale A/B.
+2. Rule-Based Classifier memeriksa relevansi event.
+3. Token Age & Liquidity Floor Filter memeriksa kelayakan token.
+4. Dedup & Cooldown Check memeriksa apakah pasangan (wallet, token) sedang cooldown.
+5. Trigger Window Engine memeriksa kondisi AND/OR terpenuhi.
+6. Feature Extraction menyiapkan feature vector.
+7. XGBoost Inference Engine menghasilkan direction, confidence, target price.
+8. Token Safety Check memvalidasi keamanan token.
+9. Confidence Threshold Gate memeriksa confidence ≥ 75% dan safety check lolos.
+10. Position Sizing menghitung ukuran posisi dari risk_pct dan jarak SL.
+11. Auto-Entry mengirim order beli via pump.fun API.
+12. Posisi berstatus OPEN, tiga lapis proteksi diaktifkan.
+Alternative Flow
+ Jika confidence < 75% atau safety check gagal, sinyal dicatat sebagai log-only (tidak lanjut ke UC-02) dan tetap masuk
+dataset training.
+ Jika Position Correlation Cap sudah tercapai, sinyal dicatat namun entry tidak dieksekusi.
+Exception Flow
+ Jika Token Safety Check API timeout, sistem fail-closed — alert diblokir, bukan diloloskan (lihat A3).
+ Jika order entry gagal setelah retry maksimal 2x, status dicatat sebagai FAILED_ENTRY, tidak masuk closed_trades.
+Post-condition
+Posisi baru berstatus OPEN dengan tiga lapis proteksi aktif, ATAU sinyal tercatat sebagai log-only/FAILED_ENTRY
+tanpa posisi terbuka.
+
+--- Page 19 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 19
+UC-02 — Monitoring Posisi Terbuka (Tiga Lapis Proteksi)
+Aspek
+Keterangan
+Aktor
+Sistem Otomatis (Eksekusi Otomatis, Lapis 1–3)
+Tujuan
+Memantau posisi terbuka secara terus-menerus dan menutup posisi begitu salah satu kondisi proteksi
+terpenuhi.
+Pre-condition
+Posisi berstatus OPEN dengan sl_initial, trailing config, dan kill-switch subscription aktif.
+Main Flow
+1. Lapis 1 mengevaluasi harga terhadap level SL setiap kali harga update.
+2. Lapis 2 mengevaluasi peak_r_multiple dan trailing level setiap kali harga update.
+3. Lapis 3 mendengarkan event on-chain (LP removal, dev sell, slippage spike, holder shift) secara independen melalui
+WebSocket terpisah.
+4. Begitu salah satu lapis terpenuhi, status posisi berubah menjadi EXITING.
+5. Order jual market dikirim via pump.fun API.
+6. Begitu fill terkonfirmasi, status berubah menjadi CLOSED, data ditulis ke closed_trades (lihat UC-03).
+Alternative Flow
+ Jika Lapis 3 trigger bersamaan dengan Lapis 1/2 sedang dievaluasi, Lapis 3 selalu menang — sistem tidak menunggu
+evaluasi Lapis 1/2 selesai.
+Exception Flow
+ Order exit gagal fill (kondisi normal) → retry dengan slippage tolerance dinaikkan bertahap, status tetap EXITING (lihat
+A3).
+ Order exit gagal fill saat kill-switch trigger → retry agresif tanpa jeda dengan slippage tolerance maksimal — prioritas
+mutlak di atas pertimbangan lain.
+ RPC WebSocket untuk Lapis 3 terputus → failover ke RPC secondary (lihat B4); Lapis 1 tetap berfungsi karena tidak
+bergantung pada RPC websocket.
+ Order exit tidak fill sama sekali karena likuiditas nol → posisi ditutup paksa dengan exit_reason='liquidity_exhausted',
+pnl_pct_actual=-100%.
+Post-condition
+Posisi berubah dari OPEN menjadi CLOSED (atau berhenti di STUCK jika likuiditas benar-benar nol), dengan
+exit_reason tercatat sesuai lapis yang trigger.
+
+--- Page 20 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 20
+UC-03 — Pencatatan Closed Trade ke Dataset
+Aspek
+Keterangan
+Aktor
+Sistem Otomatis (Closed Trade Logger)
+Tujuan
+Mencatat hasil akhir posisi sebagai satu baris dataset training dengan label yang konsisten secara
+matematis.
+Pre-condition
+Posisi berstatus EXITING dengan order jual yang sudah terkonfirmasi fill penuh.
+Main Flow
+1. Sistem menghitung pnl_pct_actual dari entry_price dan exit_price.
+2. Sistem menghitung r_multiple = pnl_pct_actual ÷ risk_pct.
+3. Sistem menentukan label: BUY_BENAR jika r_multiple ≥ +3.0, SALAH jika ≤ -1.0, HOLD jika di antaranya.
+4. Sistem menulis seluruh kolom (lihat A1 — closed_trades) termasuk exit_reason dan model_version ke database.
+5. Status posisi berubah menjadi CLOSED.
+Alternative Flow
+Tidak ada alternative flow untuk use case ini.
+Exception Flow
+ Jika penulisan ke database gagal (disk penuh, lock), sistem melakukan retry tanpa kehilangan data — posisi tidak
+boleh hilang dari tracking hanya karena gagal tulis satu kali.
+Post-condition
+Satu baris baru tersimpan di closed_trades, siap dipakai retrain berikutnya.
+
+--- Page 21 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 21
+UC-04 — Retrain Model Terjadwal
+Aspek
+Keterangan
+Aktor
+Sistem Otomatis (24h Retrain Scheduler)
+Tujuan
+Melatih ulang model XGBoost menggunakan data live terbaru dan memastikan hanya model yang
+lebih baik yang menggantikan model aktif.
+Pre-condition
+Cron job berjalan pada 02:00 UTC; minimum closed trades (100–150, atau 50 dengan ≥15–20
+BUY_BENAR) tersedia dalam rolling window 30 hari.
+Main Flow
+1. Scheduler menarik dataset closed_trades 30 hari terakhir.
+2. Sistem melatih model XGBoost baru dengan scale_pos_weight untuk mengatasi class imbalance.
+3. Sistem menghitung validation accuracy dan expectancy(R) model baru.
+4. Sistem membandingkan hasil dengan model aktif saat ini.
+5. Jika lebih baik atau setara (accuracy tidak turun >5%, expectancy tetap positif), model baru diaktifkan
+(is_active=TRUE), model lama dinonaktifkan.
+6. Versi baru dicatat di model_registry.
+Alternative Flow
+ Jika syarat minimum closed trades belum terpenuhi, retrain dilewati, model aktif tetap dipakai sampai siklus berikutnya.
+Exception Flow
+ Jika validation accuracy turun >5% ATAU expectancy berubah positif ke negatif, model baru ditolak
+(rolled_back=TRUE) dan model lama tetap aktif.
+ Jika laptop mati/sleep saat 02:00 UTC, retrain terlewat — saat startup berikutnya, sistem memeriksa timestamp retrain
+terakhir dan menjalankan retrain catch-up jika selisihnya >24 jam (lihat A3, A6).
+Post-condition
+Model aktif tetap yang terbaik berdasarkan expectancy(R), dengan jejak audit lengkap di model_registry.
+
+--- Page 22 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 22
+UC-05 — Approval Wallet Hasil Dynamic Discovery
+Aspek
+Keterangan
+Aktor
+Operator
+Tujuan
+Memutuskan apakah wallet hasil auto-discovery layak disetarakan dengan Whale A/B.
+Pre-condition
+Sistem telah menandai minimal satu wallet sebagai kandidat (source='auto_discovered') di
+watchlist_wallets.
+Main Flow
+1. Operator membuka dashboard dan melihat daftar kandidat wallet baru.
+2. Operator meninjau riwayat profit kandidat pada token yang sama dengan watchlist existing.
+3. Operator memilih approve atau reject untuk setiap kandidat.
+4. Jika approve, status active wallet tersebut menjadi TRUE dan mulai dipantau Wallet Listener.
+5. Jika reject, wallet tetap tercatat di database namun tidak pernah aktif memantau.
+Alternative Flow
+ Operator dapat menunda keputusan — kandidat tetap muncul di dashboard sampai diputuskan.
+Exception Flow
+Tidak ada exception flow khusus di luar prinsip umum recovery.
+Post-condition
+Watchlist_wallets terbarui dengan status aktif sesuai keputusan Operator.
+
+--- Page 23 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 23
+UC-06 — Penanganan Crash dan Restart Sistem
+Aspek
+Keterangan
+Aktor
+Sistem Otomatis (State Persistence & Crash Recovery)
+Tujuan
+Memulihkan seluruh state sistem (posisi terbuka, model aktif, watchlist) tanpa kehilangan kontrol atas
+posisi yang sedang berjalan.
+Pre-condition
+Proses sistem mati tak terduga (crash, laptop sleep, restart OS) saat satu atau lebih posisi berstatus
+OPEN.
+Main Flow
+1. Watchdog proses mendeteksi sistem utama berhenti dan melakukan restart otomatis.
+2. Sistem membaca tabel open_positions dari SQLite saat startup.
+3. Untuk setiap baris berstatus OPEN, sistem segera reaktivasi tiga lapis proteksi.
+4. Sistem memverifikasi harga & status token saat ini terhadap level SL/TP tersimpan.
+5. Jika harga sudah melewati SL selama sistem mati, exit market order diproses segera.
+6. Sistem memeriksa timestamp retrain terakhir dan menjalankan catch-up jika perlu.
+7. Sistem memuat watchlist wallet & model aktif, lalu lanjut ke monitoring normal.
+Alternative Flow
+Tidak ada alternative flow untuk use case ini.
+Exception Flow
+ Jika watchdog sendiri gagal restart proses (mis. error konfigurasi), notifikasi darurat ke Telegram/Discord harus terkirim
+sebagai jalur terakhir memberi tahu Operator.
+Post-condition
+Seluruh posisi OPEN sebelum crash kembali termonitor oleh tiga lapis proteksi, tanpa ada posisi yang "telanjang" tanpa
+pengawasan.
+
+--- Page 24 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 24
+UC-07 — Kalibrasi Threshold Operasional
+Aspek
+Keterangan
+Aktor
+Operator
+Tujuan
+Mengubah parameter sistem (confidence threshold, tier trailing TP, threshold kill-switch) berdasarkan
+data live tanpa menyentuh kode.
+Pre-condition
+Operator memiliki akses ke file config.yaml dan data historis closed_trades yang cukup untuk dasar
+kalibrasi.
+Main Flow
+1. Operator meninjau distribusi r_multiple dan performa exit_reason dari closed_trades.
+2. Operator menentukan nilai baru untuk parameter yang dikalibrasi (mis. trail_pct, dev_wallet_sell_threshold_pct).
+3. Operator mengubah nilai di config.yaml.
+4. Sistem membaca konfigurasi baru pada siklus berikutnya tanpa perlu redeploy kode.
+Alternative Flow
+Tidak ada alternative flow untuk use case ini.
+Exception Flow
+ Jika format config.yaml tidak valid (typo, tipe data salah), sistem harus gagal secara jelas saat startup/reload, bukan
+diam-diam memakai nilai default yang tidak disadari Operator.
+Post-condition
+Parameter operasional baru berlaku pada seluruh sinyal/posisi berikutnya, dengan jejak perubahan dapat ditelusuri
+(idealnya via version control file config.yaml).
+
+--- Page 25 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 25
+UC-08 — Failover RPC Provider
+Aspek
+Keterangan
+Aktor
+Sistem Otomatis (RPC Fallback)
+Tujuan
+Menjaga kontinuitas monitoring (termasuk kill-switch) saat RPC provider utama gagal.
+Pre-condition
+RPC primary dan secondary keduanya telah dikonfigurasi dan diverifikasi dapat diakses.
+Main Flow
+1. Sistem mendeteksi RPC primary gagal reconnect setelah N percobaan (lihat A3).
+2. Sistem beralih otomatis ke RPC secondary.
+3. Sistem mencatat event switchover untuk visibilitas di dashboard.
+4. Monitoring (termasuk kill-switch) berlanjut melalui RPC secondary.
+5. Begitu RPC primary kembali normal, sistem beralih balik dan mencatat durasi downtime untuk evaluasi keandalan
+provider.
+Alternative Flow
+Tidak ada alternative flow untuk use case ini.
+Exception Flow
+ Jika RPC secondary juga gagal, sistem masuk mode degraded — trigger baru dihentikan, namun tetap mencoba
+memantau posisi terbuka lewat polling fallback (lebih lambat dari WebSocket, namun lebih baik dari buta total).
+Post-condition
+Monitoring tetap berjalan (melalui primary, secondary, atau mode degraded), tidak ada periode benar-benar tanpa
+pengawasan kecuali kedua RPC gagal total.
+
+--- Page 26 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 26
+UC-09 — Penghentian Sistem oleh Operator
+Aspek
+Keterangan
+Aktor
+Operator
+Tujuan
+Menghentikan sistem secara aman tanpa meninggalkan posisi terbuka tanpa pengawasan.
+Pre-condition
+Sistem sedang berjalan (status running), dengan nol atau lebih posisi OPEN.
+Main Flow
+1. Operator memilih kontrol stop di dashboard.
+2. Sistem menampilkan konfirmasi jika ada posisi OPEN yang masih berjalan.
+3. Operator memilih: tutup seluruh posisi terbuka sebelum stop, atau biarkan tetap OPEN dan diawasi oleh proses
+minimal (hanya tiga lapis proteksi, tanpa entry baru).
+4. Sistem menghentikan komponen sesuai pilihan Operator.
+Alternative Flow
+ Operator dapat memilih "pause" (hentikan entry baru, tetap pantau posisi terbuka) sebagai alternatif dari stop total.
+Exception Flow
+Tidak ada exception flow khusus di luar prinsip umum recovery.
+Post-condition
+Sistem berhenti sesuai pilihan Operator, dengan status setiap posisi terbuka jelas diketahui sebelum proses benar-benar
+mati.
+
+--- Page 27 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 27
+BAGIAN 5
+User Journey
+Karena sistem ini single-user, journey disusun berdasarkan fase waktu operasional Operator —
+bukan per peran berbeda. Dimulai dari setup awal, melewati periode cold-start, hingga operasional
+penuh dengan retrain rutin.
+5.1 Fase Setup Awal (Hari ke-0)
+Langkah
+Interaksi & Outcome
+Konfigurasi wallet target
+Operator memasukkan alamat Whale A & B ke watchlist_wallets secara manual
+(source='manual'). Outcome: sistem memiliki target pantauan awal.
+Setup RPC provider
+Operator mendaftar dan mengonfigurasi RPC primary & secondary (lihat B4) di
+config.yaml. Outcome: koneksi WebSocket siap digunakan Layer 0.
+Setup wallet trading & private key
+Operator membuat wallet terpisah khusus untuk sistem (bukan wallet utama), mengisi
+modal yang memang dialokasikan untuk trading, dan menyimpan private key dalam
+bentuk terenkripsi lokal. Outcome: sistem memiliki akses eksekusi tanpa membahayakan
+aset utama Operator.
+Kalibrasi awal config.yaml
+Operator menetapkan nilai awal risk_pct_per_trade (default 1%), confidence_threshold
+(default 75%), dan batas N pada Position Correlation Cap. Outcome: parameter
+operasional siap, threshold kill-switch sengaja dikosongkan menunggu data live.
+Menjalankan Model v0 Bootstrap
+Sistem menarik histori on-chain Whale A/B dan melatih model awal sebelum closed trade
+live pertama terjadi. Outcome: sistem punya dasar prediksi sejak hari pertama, bukan
+model kosong.
+5.2 Fase Cold-Start (Closed Trade ke-1 s.d. ke-49)
+Langkah
+Interaksi & Outcome
+Memantau alert pertama
+Operator menerima alert pertama di dashboard begitu sinyal lolos confidence threshold
+dan safety check. Outcome: Operator melihat sistem bekerja end-to-end untuk pertama
+kali.
+Mengamati eksekusi otomatis
+Operator memantau posisi terbuka melalui dashboard, melihat tiga lapis proteksi aktif
+(SL, trailing, kill-switch) tanpa perlu intervensi manual. Outcome: kepercayaan terhadap
+otomasi terbangun secara bertahap.
+Meninjau closed trade pertama
+Operator melihat entri pertama masuk ke trade log dengan exit_reason tercatat jelas
+(SL/trailing_tp/kill_switch_x). Outcome: Operator dapat menilai apakah hasil sesuai
+ekspektasi desain sistem.
+Meninjau kandidat Dynamic Wallet
+Discovery (jika aktif)
+Operator melihat kandidat wallet baru muncul di dashboard dan memutuskan
+approve/reject berdasarkan riwayat profit yang ditampilkan. Outcome: watchlist
+berpotensi bertambah tanpa campur tangan manual mencari wallet baru sendiri.
+
+--- Page 28 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 28
+Langkah
+Interaksi & Outcome
+Mengamati notifikasi darurat (jika
+terjadi)
+Jika kill-switch trigger atau RPC failover terjadi, Operator menerima notifikasi
+Telegram/Discord. Outcome: Operator tetap mendapat visibilitas insiden kritis tanpa
+harus menempel di dashboard 24 jam.
+
+--- Page 29 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 29
+5.3 Fase Transisi ke Model v1 (Closed Trade ke-50)
+Langkah
+Interaksi & Outcome
+Retrain pertama dari data live
+Begitu syarat minimum closed trades terpenuhi, scheduler melatih model v1
+menggunakan data live sistem sendiri (bukan rekonstruksi histori). Outcome: model
+mulai belajar dari perilaku nyata sistem, bukan hanya histori wallet.
+Operator meninjau hasil evaluasi
+model
+Operator dapat melihat validation accuracy dan expectancy(R) model v1 dibanding v0 di
+model_registry. Outcome: Operator memahami apakah kualitas prediksi meningkat
+seiring data live bertambah.
+Kalibrasi ulang threshold trailing &
+kill-switch
+Dengan data live yang sudah ada, Operator meninjau distribusi r_multiple aktual dan
+menyesuaikan tier trailing TP serta mengisi threshold kill-switch yang sebelumnya
+kosong. Outcome: parameter operasional tidak lagi berbasis asumsi awal, melainkan
+data nyata sistem sendiri.
+5.4 Fase Operasional Penuh (Pasca Closed Trade ke-50)
+Langkah
+Interaksi & Outcome
+Monitoring rutin harian
+Operator memantau dashboard secara berkala (bukan terus-menerus), mengandalkan
+notifikasi darurat untuk kejadian yang memerlukan perhatian segera. Outcome:
+operasional menjadi semi-pasif, sistem berjalan mandiri dengan pengawasan periodik.
+Retrain otomatis berkelanjutan
+Setiap 02:00 UTC, model dilatih ulang dari rolling window 30 hari, dengan rollback
+otomatis jika performa menurun. Outcome: model terus beradaptasi terhadap kondisi
+pasar terbaru tanpa intervensi manual.
+Evaluasi periodik oleh Operator
+Operator secara berkala meninjau expectancy(R) jangka panjang dan menyesuaikan
+risk_pct_per_trade atau batas Position Correlation Cap sesuai pertumbuhan modal dan
+toleransi risiko. Outcome: parameter risiko tetap relevan terhadap kondisi modal
+Operator yang berubah dari waktu ke waktu.
+Penanganan insiden (crash, RPC
+downtime, kill-switch beruntun)
+Operator merespons notifikasi darurat sesuai kebutuhan — sistem menangani sebagian
+besar skenario secara otomatis (lihat A3, A6, B4), namun Operator tetap menjadi jalur
+eskalasi terakhir untuk kondisi yang tidak terselesaikan otomatis (status STUCK).
+ASUMSI SISTEM
+Dokumen sumber tidak menyebutkan frekuensi atau metode spesifik Operator memantau dashboard (terus-menerus
+vs periodik). Journey ini mengasumsikan pola pemantauan semi-pasif yang didukung notifikasi darurat
+(Telegram/Discord), konsisten dengan desain sistem yang menghindari kebutuhan intervensi manual per kejadian.
+
+--- Page 30 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 30
+BAGIAN 6
+Desain Database
+Skema database konsisten dengan A1 (Lampiran Teknis v2.1), ditambah satu tabel operasional
+(open_positions) yang disebut secara naratif di A6 namun belum punya struktur kolom eksplisit.
+SQLite cukup untuk seluruh skema ini — volume data sistem (puluhan–ratusan baris per 30 hari)
+jauh di bawah ambang di mana SQLite jadi bottleneck.
+6.1 Entity Relationship Overview
+Lima entitas inti, dengan open_positions dan closed_trades berbagi struktur kolom yang hampir identik — baris
+dipindahkan dari open_positions ke closed_trades begitu posisi mencapai status CLOSED (lihat A6).
+Entitas A
+Entitas B
+Relasi
+Keterangan
+watchlist_wallets
+open_positions
+One to Many
+Satu wallet dapat memicu banyak posisi terbuka pada
+waktu berbeda (wallet_source di open_positions
+merujuk ke wallet_address).
+watchlist_wallets
+closed_trades
+One to Many
+Satu wallet dapat memicu banyak closed trade
+sepanjang histori (wallet_source di closed_trades).
+model_registry
+closed_trades
+One to Many
+Satu versi model dapat menghasilkan banyak sinyal
+yang berakhir sebagai closed trade (model_version
+sebagai foreign key).
+open_positions
+onchain_events
+One to Many
+Satu posisi terbuka dapat menerima banyak event
+on-chain selama dipantau kill-switch (position_id
+sebagai foreign key).
+open_positions
+closed_trades
+One to One
+(transisional)
+Satu baris open_positions berpindah menjadi satu
+baris closed_trades begitu posisi ditutup — bukan
+relasi permanen, melainkan perpindahan status.
+watchlist_wallets
+cooldown_state
+One to Many
+Satu wallet dapat memiliki banyak entri cooldown, satu
+per token yang pernah ditradingkan (lihat B3).
+6.2 Struktur Tabel
+
+--- Page 31 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 31
+Tabel: watchlist_wallets
+Menampung Whale A & B (manual) serta wallet hasil Dynamic Wallet Discovery (auto_discovered, lihat B1).
+Kolom
+Tipe
+PK/FK
+Keterangan
+wallet_address
+TEXT
+PK
+Alamat wallet Solana, primary key
+label
+TEXT
+—
+'Whale A', 'Whale B', atau label auto-discovery
+source
+TEXT
+—
+'manual' atau 'auto_discovered'; constraint CHECK
+terhadap dua nilai ini
+added_at
+DATETIME
+—
+Timestamp wallet ditambahkan ke watchlist
+active
+BOOLEAN
+—
+Default FALSE untuk auto_discovered sampai disetujui
+Operator (lihat UC-05); default TRUE untuk manual
+
+--- Page 32 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 32
+Tabel: open_positions
+Posisi yang sedang berstatus PENDING_ENTRY, OPEN, atau EXITING. Baris dipindah ke closed_trades begitu status
+menjadi CLOSED (implementasi minimal sesuai A6).
+Kolom
+Tipe
+PK/FK
+Keterangan
+position_id
+TEXT
+PK
+UUID unik per posisi
+wallet_source
+TEXT
+FK →
+watchlist_wallets.
+wallet_address
+Wallet yang memicu sinyal
+token_address
+TEXT
+—
+Contract address token, indexed
+state
+TEXT
+—
+PENDING_ENTRY / OPEN / EXITING / FAILED_ENTRY /
+STUCK — constraint CHECK terhadap nilai yang sah
+entry_price
+REAL
+—
+Harga eksekusi aktual (NULL jika belum fill)
+entry_ts
+DATETIME
+—
+Waktu order entry tereksekusi
+sl_initial
+REAL
+—
+Harga SL awal (-1R)
+risk_pct
+REAL
+—
+Risk per trade untuk posisi ini (default dari config.yaml
+saat entry)
+position_size_usd
+REAL
+—
+Ukuran posisi dalam USD
+trailing_active
+BOOLEAN
+—
+Status trailing TP saat ini
+trailing_level
+REAL
+—
+Harga trailing terkini, jika aktif
+peak_r_multiple
+REAL
+—
+R-multiple puncak yang pernah dicapai
+confidence_score
+REAL
+—
+Confidence dari XGBoost saat entry
+model_version
+TEXT
+FK →
+model_registry.
+model_version
+Versi model yang menghasilkan sinyal
+
+--- Page 33 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 33
+Tabel: closed_trades
+Satu baris per posisi yang ditutup — sumber utama dataset training (sesuai A1, Lampiran Teknis v2.1).
+Kolom
+Tipe
+PK/FK
+Keterangan
+trade_id
+TEXT
+PK
+UUID, primary key
+wallet_source
+TEXT
+FK →
+watchlist_wallets.
+wallet_address
+Wallet yang memicu sinyal
+token_address
+TEXT
+—
+Contract address token, indexed
+token_symbol
+TEXT
+—
+Untuk tampilan dashboard saja, bukan kunci logika
+signal_ts
+DATETIME
+—
+Waktu trigger fire (UTC)
+entry_ts
+DATETIME
+—
+Waktu order entry tereksekusi
+exit_ts
+DATETIME
+—
+Waktu posisi ditutup
+direction
+TEXT
+—
+BUY/SELL — output XGBoost Inference Engine
+confidence_score
+REAL
+—
+0.0–1.0, dari XGBoost
+safety_check_pas
+sed
+BOOLEAN
+—
+Hasil Token Safety Check
+entry_price
+REAL
+—
+Harga eksekusi aktual
+exit_price
+REAL
+—
+Harga saat posisi ditutup
+position_size_usd
+REAL
+—
+Ukuran posisi dalam USD
+risk_pct
+REAL
+—
+Fixed 1% (default), dapat berbeda per posisi jika
+dikalibrasi ulang
+pnl_pct_actual
+REAL
+—
+PnL aktual dalam persen
+r_multiple
+REAL
+—
+pnl_pct_actual ÷ risk_pct — basis labeling
+label
+TEXT
+—
+BUY_BENAR/SALAH/HOLD — turunan dari r_multiple
+holding_time_min
+utes
+INTEGER
+—
+Durasi posisi terbuka
+exit_reason
+TEXT
+—
+SL/trailing_tp/kill_switch_lp/kill_switch_dev_dump/kill_swit
+ch_slippage/manual/liquidity_exhausted
+is_paper_trade
+BOOLEAN
+—
+Bedakan paper trade vs live, keduanya tetap masuk
+dataset
+
+--- Page 34 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 34
+Kolom
+Tipe
+PK/FK
+Keterangan
+model_version
+TEXT
+FK →
+model_registry.
+model_version
+Versi model yang menghasilkan sinyal ini
+Tabel: model_registry
+Mencatat setiap retrain — diperlukan untuk rollback guard (sesuai A1, Lampiran Teknis v2.1).
+Kolom
+Tipe
+PK/FK
+Keterangan
+model_version
+TEXT
+PK
+v0, v1, v2, ...
+trained_at
+DATETIME
+—
+Waktu training selesai
+training_sample_c
+ount
+INTEGER
+—
+Jumlah closed trades yang dipakai
+validation_accurac
+y
+REAL
+—
+Untuk perbandingan rollback guard
+expectancy_r
+REAL
+—
+Metrik utama evaluasi model
+is_active
+BOOLEAN
+—
+Hanya satu baris boleh TRUE pada satu waktu —
+ditegakkan melalui logika aplikasi, bukan constraint SQL
+native
+rolled_back
+BOOLEAN
+—
+TRUE jika model ini pernah di-rollback otomatis
+
+--- Page 35 ---
+SRS / TDD
+AI Smart Money Trading System
+AI Smart Money Trading System — SRS/TDD
+Halaman 35
+Tabel: onchain_events
+Log mentah setiap event on-chain yang diterima kill-switch, dipisah dari open_positions/closed_trades agar audit trail
+tetap lengkap meski tidak semua event memicu exit.
+Kolom
+Tipe
+PK/FK
+Keterangan
+event_id
+TEXT
+PK
+UUID unik per event
+position_id
+TEXT
+FK →
+open_positions.
+position_id
+Posisi terkait saat event diterima
+event_type
+TEXT
+—
+lp_removal/dev_sell/slippage_spike/holder_shift
+event_time
+DATETIME
+—
+Timestamp event diterima
+raw_payload
+TEXT
+(JSON)
+—
+Data mentah dari RPC/websocket untuk debugging
+triggered_exit
+BOOLEAN
+—
+Apakah event ini yang memicu kill-switch
+Tabel: cooldown_state
+Mendukung Dedup & Cooldown per (wallet, token) — sesuai B3, Lampiran Teknis v2.1. Tabel kecil, dicek dengan satu
+query sebelum event diteruskan ke trigger window.
+Kolom
+Tipe
+PK/FK
+Keterangan
+wallet_address
+TEXT
+PK (komposit)
+Bagian pertama composite key; juga FK ke
+watchlist_wallets.wallet_address
+token_address
+TEXT
+PK (komposit)
+Bagian kedua composite key
+last_trigger_ts
+DATETIME
+—
+Waktu trigger terakhir untuk pasangan ini
+active_position_id
+TEXT
+FK →
+open_positions.
+position_id (nullable)
+Posisi aktif terkait, jika ada; cooldown reset begitu posisi
+ini closed
+ASUMSI SISTEM
+Tabel cooldown_state tidak disebutkan strukturnya secara eksplisit di Lampiran Teknis v2.1 (B3 hanya menyebutkan
+"satu tabel kecil di SQLite, key + timestamp" secara naratif). Struktur kolom di atas adalah elaborasi teknis dari
+deskripsi tersebut, ditandai sebagai Asumsi Sistem karena bentuk pasti composite key dan kolom pendukungnya
+tidak dirinci di dokumen sumber.
+Catatan implementasi: seluruh enam tabel di atas disimpan dalam satu file SQLite. Tidak diperlukan database server
+terpisah (PostgreSQL/MySQL) untuk volume data sistem ini — konsisten dengan catatan implementasi di A1, Lampiran
+Teknis v2.1.

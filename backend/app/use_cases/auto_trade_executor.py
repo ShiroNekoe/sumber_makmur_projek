@@ -94,9 +94,11 @@ class AutoTradeExecutor:
             import sys
             from app.infrastructure.blockchain.wallet_manager import load_wallet_from_env, get_sol_balance
             from app.use_cases.trade_guard import TradeGuard
-
             keypair = load_wallet_from_env()
-            is_testing = ("pytest" in sys.modules or "unittest" in sys.modules)
+            is_testing = any("pytest" in arg or "unittest" in arg for arg in sys.argv) or "pytest" in sys.modules or "unittest" in sys.modules
+            # Force false if run via uvicorn/main.py entrypoint to avoid test discovery false positives
+            if any("uvicorn" in arg or "main.py" in arg for arg in sys.argv):
+                is_testing = False
 
             # Ambil harga SOL live dari DexScreener
             sol_price_usd = 150.0
@@ -210,26 +212,15 @@ class AutoTradeExecutor:
                             from app.infrastructure.blockchain.pumpportal_client import build_trade_transaction
                             from app.infrastructure.blockchain.tx_signer import sign_and_broadcast_transaction
                             
-                            # Tentukan pool secara dinamis (raydium/pump-amm vs pump bonding curve)
-                            pool_to_use = "pump"
-                            if self.token_info_service:
-                                try:
-                                    token_info = await self.token_info_service.get_token_info(token_address)
-                                    if token_info:
-                                        pool_to_use = "pump-amm"  # token has migrated
-                                except Exception:
-                                    pass
-                                    
-                            logger.info(f"[AUTO TRADE] Fetching unsigned TX from PumpPortal for pool '{pool_to_use}' (Attempt {attempt+1})...")
+                            logger.info(f"[AUTO TRADE] Fetching unsigned TX from PumpPortal (Attempt {attempt+1})...")
                             unsigned_tx = await build_trade_transaction(
                                 public_key=str(keypair.pubkey()),
                                 action="buy",
                                 token_mint=token_address,
                                 amount=amount_sol,
                                 denominated_in_sol=True,
-                                slippage=5.0,
-                                priority_fee=0.003,
-                                pool=pool_to_use
+                                slippage=settings.SLIPPAGE_BUY_PCT,
+                                priority_fee=settings.PRIORITY_FEE_BUY
                             )
                             
                             logger.info(f"[AUTO TRADE] Signing and broadcasting TX locally (Attempt {attempt+1})...")
