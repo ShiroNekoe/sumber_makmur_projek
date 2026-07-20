@@ -28,6 +28,9 @@ from app.api.schemas import (
     SystemErrorListResponse,
     SystemErrorResponse,
     PortfolioSummaryResponse,
+    WalletAddRequest,
+    WalletAddResponse,
+    WalletDeleteResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -396,6 +399,97 @@ async def get_active_wallets(request: Request = None):
     except Exception as e:
         logger.error(f"[DASHBOARD API] /wallets/active error: {e}", exc_info=True)
         return []
+
+
+# ─── POST /dashboard/wallets ──────────────────────────────────────────────────
+
+@router.post("/wallets", response_model=WalletAddResponse, summary="Manually add a wallet to the watchlist")
+async def add_manual_wallet(body: WalletAddRequest, request: Request):
+    try:
+        # Verify Solana address format
+        from solders.pubkey import Pubkey
+        try:
+            Pubkey.from_string(body.wallet_address)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Solana wallet address format")
+            
+        query_service = _get_query_service(request)
+        wallet_repo = query_service.wallet_repo
+        
+        existing = await wallet_repo.get_wallet(body.wallet_address)
+        if existing:
+            if existing.active:
+                return WalletAddResponse(success=False, message="Wallet is already active in watchlist.")
+            else:
+                # Reactivate it
+                existing.active = True
+                existing.status = "approved"
+                existing.label = body.label or existing.label or "Manual Whale Target"
+                await wallet_repo.update_wallet(existing)
+                message = f"Wallet re-activated in watchlist: {body.wallet_address}"
+        else:
+            # Create new WatchlistWallet
+            from app.domain.models import WatchlistWallet
+            from datetime import datetime, timezone
+            new_wallet = WatchlistWallet(
+                wallet_address=body.wallet_address,
+                label=body.label or "Manual Whale Target",
+                source="manual",
+                added_at=datetime.now(timezone.utc),
+                active=True,
+                status="approved"
+            )
+            await wallet_repo.add_wallet(new_wallet)
+            message = f"Wallet successfully added to watchlist: {body.wallet_address}"
+            
+        # Hot reload active watchlist on Monitor Orchestrator if available
+        monitor_use_case = getattr(request.app.state, "monitor_use_case", None)
+        if monitor_use_case is not None:
+            try:
+                await monitor_use_case.reload_watchlist()
+            except Exception as err:
+                logger.error(f"[DASHBOARD API] Failed to hot-reload monitor watchlist: {err}")
+                
+        return WalletAddResponse(success=True, message=message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] /wallets POST error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── DELETE /dashboard/wallets/{wallet_address} ───────────────────────────────
+
+@router.delete("/wallets/{wallet_address}", response_model=WalletDeleteResponse, summary="Manually remove/deactivate a wallet from the watchlist")
+async def delete_manual_wallet(wallet_address: str, request: Request):
+    try:
+        query_service = _get_query_service(request)
+        wallet_repo = query_service.wallet_repo
+        
+        existing = await wallet_repo.get_wallet(wallet_address)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Wallet not found in watchlist.")
+            
+        # Soft delete by deactivating to prevent database foreign key constraint errors
+        existing.active = False
+        existing.status = "rejected"
+        await wallet_repo.update_wallet(existing)
+        
+        # Hot reload active watchlist on Monitor Orchestrator if available
+        monitor_use_case = getattr(request.app.state, "monitor_use_case", None)
+        if monitor_use_case is not None:
+            try:
+                await monitor_use_case.reload_watchlist()
+            except Exception as err:
+                logger.error(f"[DASHBOARD API] Failed to hot-reload monitor watchlist: {err}")
+                
+        return WalletDeleteResponse(success=True, message=f"Wallet {wallet_address} successfully deactivated.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] /wallets DELETE error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # ─── GET /dashboard/portfolio ────────────────────────────────────────────────

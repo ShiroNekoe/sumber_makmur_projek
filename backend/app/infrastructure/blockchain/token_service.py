@@ -157,7 +157,7 @@ class SolanaTokenInfoService(ITokenInfoService):
                 age_seconds = time.time() - (created_at_ms / 1000.0)
                 age_minutes = max(age_seconds / 60.0, 0.0)
             else:
-                age_minutes = 60.0  # default fallback
+                age_minutes = 999999.0  # default fallback (fail-closed for age)
                 
             token_symbol = main_pair.get("baseToken", {}).get("symbol", "UNKNOWN")
             price_usd = float(main_pair.get("priceUsd") or 0.0)
@@ -165,8 +165,9 @@ class SolanaTokenInfoService(ITokenInfoService):
             token_created_at = (
                 datetime.fromtimestamp(created_at_ms / 1000.0, tz=timezone.utc)
                 if created_at_ms
-                else datetime.now(timezone.utc) - timedelta(minutes=60)
+                else datetime.fromtimestamp(0, tz=timezone.utc)
             )
+
 
             return {
                 "age_minutes": age_minutes,

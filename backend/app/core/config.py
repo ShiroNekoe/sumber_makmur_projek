@@ -46,9 +46,9 @@ class Settings(BaseSettings):
     # Dynamic settings loaded from config.yaml
     TRIGGER_WINDOW_MINUTES: int = 5
     TRIGGER_MODE: str = "AND"
-    MIN_TOKEN_AGE_MINUTES: int = 60
-    MAX_TOKEN_AGE_MINUTES: int = 1440
-    MIN_LIQUIDITY_USD: float = 5000.0
+    MIN_TOKEN_AGE_MINUTES: float = 2.0
+    MAX_TOKEN_AGE_MINUTES: float = 30.0
+    MIN_LIQUIDITY_USD: float = 3000.0
     COOLDOWN_SECONDS: int = 3600
     
     CONFIDENCE_THRESHOLD: float = 0.75
@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     # Dynamic Wallet Discovery Settings
     DISCOVERY_OCCURRENCE_THRESHOLD: int = 3
     DISCOVERY_PROFIT_VERIFICATION_MIN_PCT: float = 0.60
+    
+    # Coin Blacklist settings
+    BLACKLIST_KEYWORDS: List[str] = ["PEPE", "BONK", "DOGE", "FARTCOIN", "FART", "SHIB", "FLOKI", "WIF"]
+    BLACKLIST_MINTS: List[str] = [
+        "DezXAZ8z7PnrnRJjz3wXBoRgixrfNg7yFLBnRx4S75Jb", # BONK
+        "9b3j5dg64BDm18mC69o1zM45p1LsNz29o2FDN26Dpump", # Fartcoin
+    ]
     
     # Relevance Filter Settings
     DEX_ROUTERS: List[str] = [
@@ -284,6 +291,11 @@ class Settings(BaseSettings):
         self.SAFETY_REQUIRE_LP_LOCKED = sc.get("require_lp_locked", self.SAFETY_REQUIRE_LP_LOCKED)
         self.SAFETY_REQUIRE_CONTRACT_VERIFIED = sc.get("require_contract_verified", self.SAFETY_REQUIRE_CONTRACT_VERIFIED)
         self.SAFETY_REQUIRE_MINT_AUTHORITY_REVOKED = sc.get("require_mint_authority_revoked", self.SAFETY_REQUIRE_MINT_AUTHORITY_REVOKED)
+
+        # Blacklist
+        bl = config_data.get("blacklist", {})
+        self.BLACKLIST_KEYWORDS = bl.get("keywords", self.BLACKLIST_KEYWORDS)
+        self.BLACKLIST_MINTS = bl.get("mints", self.BLACKLIST_MINTS)
 
         # RPC Parameters Validation (Restart Needed Warn for Hot-Reload)
         rp = config_data.get("rpc", {})

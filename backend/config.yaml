@@ -3,9 +3,9 @@
 trigger_engine:
   window_minutes: 30
   mode: "OR"
-  min_token_age_minutes: 2.0        # Diubah dari 45 agar koin baru (pump.fun) tidak diblokir
-  max_token_age_minutes: 120
-  min_liquidity_usd: 6000.0        # naik dari 3000 — margin aman di atas rentang rug klasik (2-5 SOL)
+  min_token_age_minutes: 2.0        # Koin baru 2-30 menit
+  max_token_age_minutes: 30.0       # Batas maksimal 30 menit (TIDAK boleh lebih dari 30 menit)
+  min_liquidity_usd: 3000.0        # Diturunkan ke 3000 USD agar pool pump.fun/DEX awal bisa masuk
   cooldown_seconds: 2700            # naik dari 1800 — kurangi risiko "kena umpan dua kali"
 
 decision_gate:
@@ -85,4 +85,20 @@ transaction_fees:
   priority_fee_dust: 0.000005
   slippage_buy_pct: 5.0
   slippage_sell_pct: 10.0
-  slippage_sell_emergency_pct: 25.0
+  slippage_sell_emergency_pct: 25.0 
+
+# --- Blacklist Settings ------------------------------------------------------
+# Exclude specific token symbols and mint addresses from trading.
+blacklist:
+  keywords:
+    - "PEPE"
+    - "BONK"
+    - "DOGE"
+    - "FARTCOIN"
+    - "FART"
+    - "SHIB"
+    - "FLOKI"
+    - "WIF"
+  mints:
+    - "DezXAZ8z7PnrnRJjz3wXBoRgixrfNg7yFLBnRx4S75Jb" # BONK
+    - "9b3j5dg64BDm18mC69o1zM45p1LsNz29o2FDN26Dpump" # Fartcoin

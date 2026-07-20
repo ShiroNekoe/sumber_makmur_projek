@@ -1,4 +1,7 @@
 # Trigger auto-reload with active on-chain wallets
+from app.core.terminal_formatter import setup_terminal_logging
+setup_terminal_logging()
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -130,7 +133,8 @@ async def lifespan(app: FastAPI):
     error_handler.register_session_factory(SessionLocal)
 
     try:
-        db.execute(text("SELECT 1"))
+        # Query an actual table to verify DB integrity (SELECT 1 can succeed even if database image is malformed)
+        db.execute(text("SELECT 1 FROM watchlist_wallets LIMIT 1"))
         db_ok = True
     except Exception as db_err:
         logger.critical(f"[DATABASE CORRUPT] Database health check failed: {db_err}")
@@ -231,6 +235,17 @@ async def lifespan(app: FastAPI):
         wallet_discovery_service = WalletDiscoveryService(wallet_repo, token_info_service)
         await wallet_discovery_service.start()
         app.state.wallet_discovery_service = wallet_discovery_service
+
+        # F-20 New Token Live Discovery Service (WebSocket pool scanner)
+        from app.ml_pipeline.new_token_discovery_service import NewTokenDiscoveryService
+        new_token_discovery_service = NewTokenDiscoveryService(
+            trade_history_repo=trade_history_repo,
+            token_info_service=token_info_service,
+            model_registry_repo=model_registry_repo,
+        )
+        app.state.new_token_discovery_service = new_token_discovery_service
+        app.state.new_token_discovery_task = asyncio.create_task(new_token_discovery_service.run_forever())
+        logger.info("[STARTUP] Spawned background task for NewTokenDiscoveryService.")
 
         # F-13 Token Age & Liquidity Hard Filter
         from app.infrastructure.database.repository import SQLAlchemyHardFilterLogRepository
@@ -431,6 +446,10 @@ async def lifespan(app: FastAPI):
             
     if hasattr(app.state, "retrain_task"):
         app.state.retrain_task.cancel()
+
+    if hasattr(app.state, "new_token_discovery_task"):
+        app.state.new_token_discovery_task.cancel()
+        logger.info("[SHUTDOWN] Cancelled NewTokenDiscoveryService task.")
         
     db.close()
 
@@ -478,3 +497,5 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({"type": "ping_ack", "data": data})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# Reload trigger comment to refresh CORS settings from .env

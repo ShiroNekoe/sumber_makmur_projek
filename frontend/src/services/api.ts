@@ -16,6 +16,7 @@ export const endpoints = {
   dashboardPortfolio: `${API_BASE_URL}/dashboard/portfolio`,
   dashboardActiveWallets: `${API_BASE_URL}/dashboard/wallets/active`,
   dashboardExportPdf: `${API_BASE_URL}/dashboard/export/pdf`,
+  dashboardWallets: `${API_BASE_URL}/dashboard/wallets`,
 };
 
 export const exportPortfolioPdfUrl = (startDate?: string, endDate?: string) => {
@@ -96,5 +97,29 @@ export const fetchSystemErrors = async (limit = 50) => {
 export const fetchActiveWallets = async () => {
   const res = await fetch(endpoints.dashboardActiveWallets);
   if (!res.ok) throw new Error('Failed to fetch active wallets');
+  return res.json();
+};
+
+export const addManualWallet = async (walletAddress: string, label?: string) => {
+  const res = await fetch(endpoints.dashboardWallets, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ wallet_address: walletAddress, label }),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || 'Failed to add wallet to watchlist');
+  }
+  return res.json();
+};
+
+export const deleteManualWallet = async (walletAddress: string) => {
+  const res = await fetch(`${endpoints.dashboardWallets}/${walletAddress}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || 'Failed to remove wallet from watchlist');
+  }
   return res.json();
 };

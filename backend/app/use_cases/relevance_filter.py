@@ -10,6 +10,10 @@ from app.domain.models import FilterAuditLog
 
 logger = logging.getLogger(__name__)
 
+# Global scan cycle/event counter for terminal visualization
+_scan_cycle_counter = 0
+
+
 
 class RelevanceFilter(IRelevanceFilter):
     """
@@ -63,6 +67,14 @@ class RelevanceFilter(IRelevanceFilter):
             amount_usd = float(event_data.get("amount_usd", 0.0))
             token_mint = event_data.get("token_mint")
             signature = event_data["signature"]
+
+            global _scan_cycle_counter
+            _scan_cycle_counter += 1
+            wallet_short = f"{wallet_address[:6]}...{wallet_address[-4:]}" if len(wallet_address) > 10 else wallet_address
+            sig_short = f"{signature[:12]}..." if len(signature) > 12 else signature
+            logger.info(
+                f"─── MONITOR EVENT #{_scan_cycle_counter}: {wallet_short} ({event_type.upper()}) — SIGNATURE: {sig_short} ───"
+            )
             timestamp = event_data.get("timestamp_utc") or datetime.now(timezone.utc)
             
             # Destination/receiver could be in payload for transfers

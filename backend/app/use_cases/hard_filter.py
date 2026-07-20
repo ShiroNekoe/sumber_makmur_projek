@@ -1,14 +1,28 @@
 import logging
 import time
 import uuid
+import os
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
+
 
 from app.core.config import settings
 from app.domain.interfaces import IHardFilterLogRepository, ITokenInfoService, ITriggerEngine
 from app.domain.models import HardFilterAuditLog
 
 logger = logging.getLogger(__name__)
+
+
+def format_duration(minutes: float) -> str:
+    if minutes < 0.0:
+        minutes = 0.0
+    hours = int(minutes // 60)
+    mins = int(minutes % 60)
+    if hours > 0:
+        if mins > 0:
+            return f"{hours}h{mins}m"
+        return f"{hours}h"
+    return f"{mins}m"
 
 
 class TokenAgeLiquidityHardFilter:
@@ -54,6 +68,7 @@ class TokenAgeLiquidityHardFilter:
             # Conservative Approach: DexScreener down or token not found -> DISCARD
             passed = False
             reason = "token_not_found"
+            symbol = "UNKNOWN"
         else:
             age_minutes = token_info.get("age_minutes", 0.0)
 
@@ -79,16 +94,36 @@ class TokenAgeLiquidityHardFilter:
             is_live_network = "api.mainnet-beta.solana.com" in settings.SOLANA_RPC_URL
             is_fallback_token = symbol == "MOCK_TOKEN" and token_mint != "MOCK_TOKEN_ADDR"
             
-            import os
+            # Check blacklist
+            token_symbol_upper = symbol.upper()
+            is_blacklisted_symbol = any(keyword.upper() in token_symbol_upper for keyword in getattr(settings, "BLACKLIST_KEYWORDS", []))
+            is_blacklisted_mint = token_mint in getattr(settings, "BLACKLIST_MINTS", [])
+            
             if is_live_network and is_fallback_token and os.getenv("SIMULATION_MODE") != "True":
                 passed = False
                 reason = "dexscreener_failed"
+            elif is_blacklisted_mint:
+                passed = False
+                reason = "token_blacklisted_mint"
+            elif is_blacklisted_symbol:
+                passed = False
+                reason = f"token_blacklisted_symbol ({symbol})"
             elif age_minutes < settings.MIN_TOKEN_AGE_MINUTES:
                 passed = False
                 reason = f"age_too_low ({age_minutes:.1f}m < {settings.MIN_TOKEN_AGE_MINUTES}m)"
+                age_str = format_duration(age_minutes)
+                limit_str = format_duration(settings.MIN_TOKEN_AGE_MINUTES)
+                logger.warning(
+                    f"[AGE FILTER] SKIP {symbol} — umur {age_str} < batas {limit_str} (token terlalu baru, bukan target)"
+                )
             elif age_minutes > settings.MAX_TOKEN_AGE_MINUTES:
                 passed = False
                 reason = f"age_too_high ({age_minutes:.1f}m > {settings.MAX_TOKEN_AGE_MINUTES}m)"
+                age_str = format_duration(age_minutes)
+                limit_str = format_duration(settings.MAX_TOKEN_AGE_MINUTES)
+                logger.warning(
+                    f"[AGE FILTER] SKIP {symbol} — umur {age_str} > batas {limit_str} (token lama, bukan target)"
+                )
             elif liquidity_usd < settings.MIN_LIQUIDITY_USD:
                 passed = False
                 reason = f"liquidity_too_low (${liquidity_usd:.2f} < ${settings.MIN_LIQUIDITY_USD:.2f})"
@@ -106,6 +141,13 @@ class TokenAgeLiquidityHardFilter:
         )
         
         await self.hard_filter_log_repo.add_hard_filter_log(audit_log)
+
+        # Single line scan summary
+        mint_short = f"{token_mint[:6]}...{token_mint[-4:]}" if len(token_mint) > 10 else token_mint
+        filter_status = "PASS" if passed else f"BLOCKED ({reason})"
+        logger.info(
+            f"[SCAN] {symbol} ({mint_short}) | Age: {age_minutes:.1f}m | Liq: ${liquidity_usd:,.2f} | Filter: {filter_status} | Stage: HARD FILTER"
+        )
 
         if passed:
             logger.info(

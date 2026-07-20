@@ -21,9 +21,16 @@ async def execute_pumpportal_swap(
     Returns: transaction signature string on success, None on failure.
     """
     import sys
-    is_testing = any("pytest" in arg or "unittest" in arg for arg in sys.argv) or "pytest" in sys.modules or "unittest" in sys.modules
-    # Force false if run via uvicorn/main.py entrypoint to avoid test discovery false positives
-    if any("uvicorn" in arg or "main.py" in arg for arg in sys.argv):
+    import os
+    is_testing = (
+        any("pytest" in arg or "unittest" in arg for arg in sys.argv) 
+        or "pytest" in sys.modules 
+        or "unittest" in sys.modules
+        or os.getenv("SIMULATION_MODE", "False").lower() == "true"
+    )
+    # Force false if run via uvicorn/main.py entrypoint to avoid test discovery false positives,
+    # UNLESS SIMULATION_MODE is explicitly enabled.
+    if any("uvicorn" in arg or "main.py" in arg for arg in sys.argv) and os.getenv("SIMULATION_MODE", "False").lower() != "true":
         is_testing = False
     api_key = getattr(settings, "PUMP_FUN_API_KEY", None)
     if is_testing or not api_key or len(api_key.strip()) < 10 or api_key == "YOUR_PUMP_FUN_API_KEY":

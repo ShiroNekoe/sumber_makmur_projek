@@ -218,3 +218,19 @@ class PortfolioSummaryResponse(BaseModel):
     history_30d: List[HistorySample] = []
     history_180d: List[HistorySample] = []
     history_360d: List[HistorySample] = []
+
+
+# ─── Wallet Manual Manage Schemas ──────────────────────────────────────────────
+
+class WalletAddRequest(BaseModel):
+    wallet_address: str
+    label: Optional[str] = ""
+
+class WalletAddResponse(BaseModel):
+    success: bool
+    message: str
+
+class WalletDeleteResponse(BaseModel):
+    success: bool
+    message: str
+

@@ -92,12 +92,19 @@ class AutoTradeExecutor:
             
             # 2. Load Wallet Keypair & Live SOL Price (sebelum sizing)
             import sys
+            import os
             from app.infrastructure.blockchain.wallet_manager import load_wallet_from_env, get_sol_balance
             from app.use_cases.trade_guard import TradeGuard
             keypair = load_wallet_from_env()
-            is_testing = any("pytest" in arg or "unittest" in arg for arg in sys.argv) or "pytest" in sys.modules or "unittest" in sys.modules
-            # Force false if run via uvicorn/main.py entrypoint to avoid test discovery false positives
-            if any("uvicorn" in arg or "main.py" in arg for arg in sys.argv):
+            is_testing = (
+                any("pytest" in arg or "unittest" in arg for arg in sys.argv) 
+                or "pytest" in sys.modules 
+                or "unittest" in sys.modules
+                or os.getenv("SIMULATION_MODE", "False").lower() == "true"
+            )
+            # Force false if run via uvicorn/main.py entrypoint to avoid test discovery false positives,
+            # UNLESS SIMULATION_MODE is explicitly enabled.
+            if any("uvicorn" in arg or "main.py" in arg for arg in sys.argv) and os.getenv("SIMULATION_MODE", "False").lower() != "true":
                 is_testing = False
 
             # Ambil harga SOL live dari DexScreener
@@ -130,9 +137,9 @@ class AutoTradeExecutor:
 
             position_size_usd = (equity * risk_pct) / sl_distance_pct
 
-            # Minimum position size: 0.009 SOL (swap 0.005 + fee 0.003 + buffer 0.001)
+            # Minimum position size: 0.002 SOL (small size for lower balances)
             # agar transaksi on-chain bisa masuk jaringan
-            min_position_sol = 0.009
+            min_position_sol = 0.002
             min_position_usd = min_position_sol * sol_price_usd
             if position_size_usd < min_position_usd:
                 logger.warning(
@@ -153,7 +160,7 @@ class AutoTradeExecutor:
             )
 
             # Validasi saldo cukup sebelum lanjut (fail-fast)
-            required_sol = (position_size_usd / sol_price_usd) + 0.003 + 0.001  # swap + fee + buffer
+            required_sol = (position_size_usd / sol_price_usd) + 0.0005 + 0.0001  # swap + fee + buffer
             if not is_testing and keypair and sol_balance < required_sol:
                 logger.error(
                     f"[AUTO TRADE] [BLOCKED] Saldo tidak cukup. "

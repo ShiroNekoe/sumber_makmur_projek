@@ -22,6 +22,8 @@ import {
   Briefcase,
   Download,
   FileText,
+  Plus,
+  Trash2,
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { 
@@ -35,6 +37,8 @@ import {
   fetchDashboardPortfolio,
   fetchActiveWallets,
   exportPortfolioPdfUrl,
+  addManualWallet,
+  deleteManualWallet,
 } from '../services/api'
 
 export const Dashboard: React.FC = () => {
@@ -75,6 +79,12 @@ export const Dashboard: React.FC = () => {
   const [timeframe, setTimeframe] = useState<'1D' | '7D' | '30D' | '180D' | '360D'>('7D');
   const [hoveredPoint, setHoveredPoint] = useState<any | null>(null);
   const [hoveredPointIndex, setHoveredPointIndex] = useState<number | null>(null);
+  
+  // Watchlist Manual Addition & Deletion States
+  const [newWalletAddress, setNewWalletAddress] = useState('');
+  const [newWalletLabel, setNewWalletLabel] = useState('');
+  const [isAddingWallet, setIsAddingWallet] = useState(false);
+  const [isDeletingWallet, setIsDeletingWallet] = useState<string | null>(null);
   
   // PDF Report Export States
   const [pdfStartDate, setPdfStartDate] = useState<string>('');
@@ -217,6 +227,67 @@ export const Dashboard: React.FC = () => {
       addNotification(`Failed to ${action} candidate wallet`, 'error')
     }
   }
+
+  const handleAddWallet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newWalletAddress.trim()) {
+      addNotification("Please enter a wallet address", "warning");
+      return;
+    }
+    
+    try {
+      setIsAddingWallet(true);
+      addNotification(`Adding wallet ${newWalletAddress.trim().substring(0, 6)}... to watchlist`, "info");
+      const res = await addManualWallet(newWalletAddress.trim(), newWalletLabel.trim());
+      
+      if (res.success) {
+        addNotification(res.message, "success");
+        setNewWalletAddress('');
+        setNewWalletLabel('');
+        
+        // Refresh active list
+        try {
+          const list = await fetchActiveWallets();
+          if (list) setActiveWallets(list);
+        } catch (listErr) {
+          console.warn("Could not refresh active wallets:", listErr);
+        }
+      } else {
+        addNotification(res.message, "warning");
+      }
+    } catch (err: any) {
+      console.error(err);
+      addNotification(err.message || "Failed to add manual wallet to watchlist", "error");
+    } finally {
+      setIsAddingWallet(false);
+    }
+  };
+
+  const handleDeleteWallet = async (address: string) => {
+    try {
+      setIsDeletingWallet(address);
+      addNotification(`Deactivating wallet ${address.substring(0, 6)}... from watchlist`, "info");
+      const res = await deleteManualWallet(address);
+      
+      if (res.success) {
+        addNotification(res.message, "success");
+        
+        // Refresh active list
+        try {
+          const list = await fetchActiveWallets();
+          if (list) setActiveWallets(list);
+        } catch (listErr) {
+          console.warn("Could not refresh active wallets:", listErr);
+        }
+      }
+    } catch (err: any) {
+      console.error(err);
+      addNotification(err.message || "Failed to deactivate wallet from watchlist", "error");
+    } finally {
+      setIsDeletingWallet(null);
+    }
+  };
+
 
   const handleRetrain = async () => {
     try {
@@ -1139,20 +1210,60 @@ export const Dashboard: React.FC = () => {
               </div>
             </section>
 
-            <section className="lg:col-span-1 flex flex-col p-4 bg-cyber-card border border-cyber-border rounded-xl">
-              <div className="flex items-center space-x-2 pb-3 mb-3 border-b border-cyber-border/40">
+            <section className="lg:col-span-1 flex flex-col p-4 bg-cyber-card border border-cyber-border rounded-xl space-y-4">
+              <div className="flex items-center space-x-2 pb-3 border-b border-cyber-border/40">
                 <Compass className="w-5 h-5 text-indigo-400" />
                 <h2 className="text-sm font-semibold tracking-wider text-white font-mono">ACTIVE TARGETS</h2>
               </div>
-              <div className="space-y-4">
+              
+              {/* Manual Add Wallet Form */}
+              <form onSubmit={handleAddWallet} className="bg-cyber-cardLight/30 border border-cyber-border/40 rounded-lg p-3 space-y-2">
+                <span className="text-[10px] text-cyber-textMuted font-mono uppercase block">Add Manual Whale Wallet</span>
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    placeholder="Solana Wallet Address"
+                    value={newWalletAddress}
+                    onChange={(e) => setNewWalletAddress(e.target.value)}
+                    className="w-full bg-cyber-cardLight border border-cyber-border/60 rounded px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Label / Name (optional)"
+                    value={newWalletLabel}
+                    onChange={(e) => setNewWalletLabel(e.target.value)}
+                    className="w-full bg-cyber-cardLight border border-cyber-border/60 rounded px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none focus:border-indigo-500 transition-colors"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isAddingWallet}
+                    className="w-full flex items-center justify-center space-x-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-cyber-cardLight text-white rounded font-bold font-mono text-xs transition-colors cursor-pointer border border-indigo-500/50"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{isAddingWallet ? 'ADDING...' : 'ADD WALLET'}</span>
+                  </button>
+                </div>
+              </form>
+
+              <div className="max-h-[400px] overflow-y-auto pr-1 space-y-3">
                 {activeWallets.length > 0 ? (
                   activeWallets.map((wallet) => (
-                    <div key={wallet.wallet_address} className="p-3.5 rounded bg-cyber-cardLight border border-cyber-border/40">
-                      <p className="text-xs font-bold text-gray-300 font-mono">{wallet.label || 'Whale Target'}</p>
-                      <p className="text-[10px] text-cyber-textMuted font-mono mt-1 break-all">{wallet.wallet_address}</p>
-                      <span className="mt-2.5 inline-flex items-center px-2 py-0.5 rounded text-[8px] font-bold bg-cyber-emerald/10 text-cyber-emerald border border-cyber-emerald/20 font-mono uppercase">
-                        {wallet.source === 'manual' ? 'MANUAL TARGET' : 'DYNAMIC TARGET'}
-                      </span>
+                    <div key={wallet.wallet_address} className="p-3.5 rounded bg-cyber-cardLight border border-cyber-border/40 flex justify-between items-start">
+                      <div className="space-y-1 select-text">
+                        <p className="text-xs font-bold text-gray-300 font-mono">{wallet.label || 'Whale Target'}</p>
+                        <p className="text-[10px] text-cyber-textMuted font-mono break-all">{wallet.wallet_address}</p>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[8px] font-bold bg-cyber-emerald/10 text-cyber-emerald border border-cyber-emerald/20 font-mono uppercase">
+                          {wallet.source === 'manual' ? 'MANUAL TARGET' : 'DYNAMIC TARGET'}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteWallet(wallet.wallet_address)}
+                        disabled={isDeletingWallet === wallet.wallet_address}
+                        className="ml-2 p-1.5 bg-cyber-rose/10 hover:bg-cyber-rose/30 border border-cyber-rose/30 hover:border-cyber-rose/60 text-cyber-rose rounded transition-all cursor-pointer flex-shrink-0"
+                        title="Remove Wallet"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   ))
                 ) : (

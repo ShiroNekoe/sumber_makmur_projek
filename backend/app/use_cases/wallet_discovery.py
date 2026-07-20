@@ -81,8 +81,28 @@ class WalletDiscoveryService:
             return
 
         # Guard: Only analyze tokens within the allowed age window.
-        # token_age_minutes is set by HardFilter. If it's missing or too old, skip entirely.
+        # token_age_minutes is set by HardFilter. If it's missing, fetch from service.
         token_age = event.get("token_age_minutes")
+        if token_age is None:
+            try:
+                token_info = await self.token_info_service.get_token_info(token_address)
+                if token_info:
+                    token_age = token_info.get("age_minutes")
+                    token_created_at = token_info.get("token_created_at")
+                    if token_created_at:
+                        try:
+                            if isinstance(token_created_at, str):
+                                created_dt = datetime.fromisoformat(token_created_at.replace("Z", "+00:00"))
+                            else:
+                                created_dt = token_created_at
+                            if created_dt.tzinfo is None:
+                                created_dt = created_dt.replace(tzinfo=timezone.utc)
+                            token_age = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60.0
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.error(f"[WALLET DISCOVERY] Error resolving age for candidate check: {e}")
+
         if token_age is None or token_age > settings.MAX_TOKEN_AGE_MINUTES:
             logger.debug(
                 f"[WALLET DISCOVERY] Skipping {token_address[:10]}... "
