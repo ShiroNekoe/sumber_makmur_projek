@@ -146,6 +146,51 @@ class TestNewTokenDiscoveryService(unittest.IsolatedAsyncioTestCase):
         # past_exit_pattern_score: 1 kill_switch / 2 trades = 0.50
         self.assertAlmostEqual(features[0][8], 0.50)
 
+    async def test_active_trading_trigger(self):
+        # Setup mock safety check gate
+        mock_gate = MagicMock()
+        mock_gate.evaluate_safety = AsyncMock()
+        self.service.safety_check_gate = mock_gate
+
+        # Mock candidate pairs and snapshot
+        now = datetime.now(timezone.utc)
+        self.service._fetch_candidate_pairs = AsyncMock(return_value=["ActiveCandidateMint11111111111111"])
+        self.service._fetch_pair_snapshot = AsyncMock(return_value=TokenMarketSnapshot(
+            price_usd=1.25,
+            liquidity_usd=10000.0,
+            volume_24h=5000.0,
+            pair_created_at=now - timedelta(minutes=15),
+        ))
+        
+        # Mock ML scoring to be above confidence threshold (0.50)
+        self.service._score = AsyncMock(return_value=0.85)
+
+        # Force trade enabled setting
+        from app.core.config import settings
+        orig_enabled = settings.DISCOVERY_TRADE_ENABLED
+        settings.DISCOVERY_TRADE_ENABLED = True
+
+        try:
+            # Trigger scan
+            opps = await self.service.scan_once()
+            self.assertEqual(len(opps), 1)
+            
+            # Verify that evaluate_safety was triggered as a background task
+            await asyncio.sleep(0.1) # Yield execution to let background tasks run
+            mock_gate.evaluate_safety.assert_called_once()
+            
+            # Check arguments passed to evaluate_safety
+            args, _ = mock_gate.evaluate_safety.call_args
+            prediction, fv = args[0], args[1]
+            self.assertEqual(prediction.token_address, "ActiveCandidateMint11111111111111")
+            self.assertEqual(prediction.confidence_score, 0.85)
+            self.assertEqual(prediction.wallet_source, "new_token_discovery")
+            self.assertEqual(fv.token_address, "ActiveCandidateMint11111111111111")
+            self.assertEqual(fv.wallet_source, "new_token_discovery")
+            
+        finally:
+            settings.DISCOVERY_TRADE_ENABLED = orig_enabled
+
 
 if __name__ == "__main__":
     unittest.main()

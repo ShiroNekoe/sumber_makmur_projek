@@ -69,6 +69,7 @@ safety_check:
 discovery:
   occurrence_threshold: 3
   profit_verification_min_pct: 0.60
+  trade_enabled: true
 
 rpc:
   primary_url: "https://convincing-orbital-gas.solana-mainnet.quiknode.pro/21ba38b9733739c54695b200c406dfa2e03ca0de"

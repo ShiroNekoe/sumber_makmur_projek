@@ -26,9 +26,19 @@ class TestTokenAgeLiquidityHardFilter(unittest.IsolatedAsyncioTestCase):
 
         # Configured defaults in test environment settings:
         from app.core.config import settings
+        self.orig_min_token_age = settings.MIN_TOKEN_AGE_MINUTES
+        self.orig_max_token_age = settings.MAX_TOKEN_AGE_MINUTES
+        self.orig_min_liquidity = settings.MIN_LIQUIDITY_USD
+        
         settings.MIN_TOKEN_AGE_MINUTES = 60
         settings.MAX_TOKEN_AGE_MINUTES = 1440
         settings.MIN_LIQUIDITY_USD = 5000.0
+
+    async def asyncTearDown(self):
+        from app.core.config import settings
+        settings.MIN_TOKEN_AGE_MINUTES = self.orig_min_token_age
+        settings.MAX_TOKEN_AGE_MINUTES = self.orig_max_token_age
+        settings.MIN_LIQUIDITY_USD = self.orig_min_liquidity
 
     async def test_token_passes_filter(self):
         # Setup: Token is 2 hours old and has $15k liquidity (passes both checks)

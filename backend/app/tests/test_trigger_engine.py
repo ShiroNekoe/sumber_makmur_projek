@@ -37,11 +37,24 @@ class TestTriggerEngine(unittest.IsolatedAsyncioTestCase):
         )
 
         # Force some settings
+        self.orig_window = settings.TRIGGER_WINDOW_MINUTES
+        self.orig_min_age = settings.MIN_TOKEN_AGE_MINUTES
+        self.orig_max_age = settings.MAX_TOKEN_AGE_MINUTES
+        self.orig_min_liq = settings.MIN_LIQUIDITY_USD
+        self.orig_cooldown = settings.COOLDOWN_SECONDS
+        
         settings.TRIGGER_WINDOW_MINUTES = 5
         settings.MIN_TOKEN_AGE_MINUTES = 60
         settings.MAX_TOKEN_AGE_MINUTES = 1440
         settings.MIN_LIQUIDITY_USD = 5000.0
         settings.COOLDOWN_SECONDS = 3600
+
+    def tearDown(self):
+        settings.TRIGGER_WINDOW_MINUTES = self.orig_window
+        settings.MIN_TOKEN_AGE_MINUTES = self.orig_min_age
+        settings.MAX_TOKEN_AGE_MINUTES = self.orig_max_age
+        settings.MIN_LIQUIDITY_USD = self.orig_min_liq
+        settings.COOLDOWN_SECONDS = self.orig_cooldown
 
     async def test_hard_filter_token_age(self):
         # Set token info as too new (10 minutes old)

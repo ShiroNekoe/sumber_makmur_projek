@@ -177,10 +177,38 @@ async def close_token_account(
         
         owner_pub = signer_keypair.pubkey()
         mint_pub = Pubkey.from_string(token_address)
-        
-        # 1. Derive Associated Token Account (ATA)
-        TOKEN_PROGRAM_ID = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
         ASSOCIATED_TOKEN_PROGRAM_ID = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+        
+        primary_url = getattr(settings, "RPC_PRIMARY_URL", "https://api.mainnet-beta.solana.com")
+        
+        # 1. Detect token program dynamically by querying mint owner
+        token_program_str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        info_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getAccountInfo",
+            "params": [str(mint_pub), {"encoding": "jsonParsed"}]
+        }
+        def sync_fetch_info():
+            try:
+                req = urllib.request.Request(
+                    primary_url,
+                    data=json.dumps(info_payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=6) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except Exception:
+                return {}
+                
+        info_res = await asyncio.to_thread(sync_fetch_info)
+        if "result" in info_res and info_res["result"] and info_res["result"].get("value"):
+            owner = info_res["result"]["value"].get("owner")
+            if owner:
+                token_program_str = owner
+                
+        TOKEN_PROGRAM_ID = Pubkey.from_string(token_program_str)
         ata = Pubkey.find_program_address(
             [bytes(owner_pub), bytes(TOKEN_PROGRAM_ID), bytes(mint_pub)],
             ASSOCIATED_TOKEN_PROGRAM_ID
@@ -188,8 +216,6 @@ async def close_token_account(
         
         # 1.5. Wait 2.0s to allow sell transaction to finalize on RPC node before querying balance
         await asyncio.sleep(2.0)
-        
-        primary_url = getattr(settings, "RPC_PRIMARY_URL", "https://api.mainnet-beta.solana.com")
         
         # 2. Query ATA balance first via RPC
         balance_payload = {

@@ -38,7 +38,7 @@ class TestWalletDiscoveryService(unittest.IsolatedAsyncioTestCase):
             "amount_usd": 1500.00,
             "signature": "sim_signature_123",
             "timestamp_utc": datetime.now(timezone.utc),
-            "token_age_minutes": 60.0  # Within valid window (30–120m)
+            "token_age_minutes": 15.0  # Within valid window (2-30m in default test config)
         }
 
         # Queue occurrences 3 times to trigger registration threshold

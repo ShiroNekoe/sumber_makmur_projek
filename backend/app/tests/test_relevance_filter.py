@@ -28,10 +28,21 @@ class TestRelevanceFilter(unittest.IsolatedAsyncioTestCase):
         )
 
         # Force some settings for deterministic testing
+        self.orig_routers = settings.DEX_ROUTERS
+        self.orig_custodials = settings.CUSTODIAL_EXCHANGES
+        self.orig_min_swap = settings.MIN_SWAP_AMOUNT_USD
+        self.orig_min_lp = settings.MIN_LP_CHANGE_USD
+        
         settings.DEX_ROUTERS = ["6EF8rrect3EDQS425286575m1111111111111111"]
         settings.CUSTODIAL_EXCHANGES = ["BinanceCustodianAddress1111111111111111"]
         settings.MIN_SWAP_AMOUNT_USD = 10.0
         settings.MIN_LP_CHANGE_USD = 1000.0
+
+    def tearDown(self):
+        settings.DEX_ROUTERS = self.orig_routers
+        settings.CUSTODIAL_EXCHANGES = self.orig_custodials
+        settings.MIN_SWAP_AMOUNT_USD = self.orig_min_swap
+        settings.MIN_LP_CHANGE_USD = self.orig_min_lp
 
     async def test_rule1_dex_router_check(self):
         # 1. Event with valid DEX router should pass Rule 1

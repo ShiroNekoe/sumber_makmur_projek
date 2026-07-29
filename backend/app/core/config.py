@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     # Dynamic Wallet Discovery Settings
     DISCOVERY_OCCURRENCE_THRESHOLD: int = 3
     DISCOVERY_PROFIT_VERIFICATION_MIN_PCT: float = 0.60
+    DISCOVERY_TRADE_ENABLED: bool = True
     
     # Coin Blacklist settings
     BLACKLIST_KEYWORDS: List[str] = ["PEPE", "BONK", "DOGE", "FARTCOIN", "FART", "SHIB", "FLOKI", "WIF"]
@@ -277,6 +278,7 @@ class Settings(BaseSettings):
         dy = config_data.get("discovery", {})
         self.DISCOVERY_OCCURRENCE_THRESHOLD = dy.get("occurrence_threshold", self.DISCOVERY_OCCURRENCE_THRESHOLD)
         self.DISCOVERY_PROFIT_VERIFICATION_MIN_PCT = dy.get("profit_verification_min_pct", self.DISCOVERY_PROFIT_VERIFICATION_MIN_PCT)
+        self.DISCOVERY_TRADE_ENABLED = dy.get("trade_enabled", self.DISCOVERY_TRADE_ENABLED)
 
         # Relevance Filter
         rf = config_data.get("relevance_filter", {})

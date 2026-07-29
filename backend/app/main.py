@@ -242,6 +242,7 @@ async def lifespan(app: FastAPI):
             trade_history_repo=trade_history_repo,
             token_info_service=token_info_service,
             model_registry_repo=model_registry_repo,
+            safety_check_gate=safety_check_gate
         )
         app.state.new_token_discovery_service = new_token_discovery_service
         app.state.new_token_discovery_task = asyncio.create_task(new_token_discovery_service.run_forever())

@@ -59,12 +59,14 @@ class NewTokenDiscoveryService:
         model_registry_repo: Optional[IModelRegistryRepository] = None,
         rpc_url: Optional[str] = None,
         models_dir: str = "models",
+        safety_check_gate: Optional[Any] = None,
     ):
         self.trade_history_repo = trade_history_repo
         self.token_info_service = token_info_service
         self.model_registry_repo = model_registry_repo
         self.rpc_url = rpc_url or settings.SOLANA_RPC_URL
         self.models_dir = models_dir
+        self.safety_check_gate = safety_check_gate
 
         self.model: Optional[xgb.Booster] = None
         self.rpc_source = SolanaRpcHistoricalTransactionSource(rpc_url=self.rpc_url)
@@ -423,7 +425,7 @@ class NewTokenDiscoveryService:
                 closed_trades: List[ClosedTrade] = await self.trade_history_repo.get_closed_trades(limit=200)
                 recent_trades = [
                     t for t in closed_trades
-                    if (t.exit_ts.replace(tzinfo=timezone.utc) if t.exit_ts and t.exit_ts.tzinfo is None else t.exit_ts) > thirty_days_ago
+                    if t.exit_ts is not None and (t.exit_ts.replace(tzinfo=timezone.utc) if t.exit_ts.tzinfo is None else t.exit_ts) > thirty_days_ago
                 ]
 
                 if recent_trades:
@@ -541,6 +543,81 @@ class NewTokenDiscoveryService:
                     "discovered_at": datetime.now(timezone.utc).isoformat(),
                 }
                 discovered_opportunities.append(opp)
+
+                # Active Execution Trigger!
+                if getattr(settings, "DISCOVERY_TRADE_ENABLED", True) and self.safety_check_gate:
+                    try:
+                        from app.domain.models import FeatureVector, PredictionResult
+                        
+                        now = datetime.now(timezone.utc)
+                        token_age = 60.0
+                        if snapshot.pair_created_at:
+                            token_age = max(0.0, (now - snapshot.pair_created_at).total_seconds() / 60.0)
+                            
+                        # Query sqlite stats (extracted from our _extract_features code)
+                        win_rate_30d = 0.45
+                        avg_holding_time_minutes = 20.0
+                        typical_trade_size_usd = 500.0
+                        past_exit_pattern_score = 0.0
+                        
+                        if self.trade_history_repo:
+                            try:
+                                rolling_days = getattr(settings, "RETRAIN_ROLLING_WINDOW_DAYS", 30)
+                                thirty_days_ago = now - timedelta(days=rolling_days)
+                                closed_trades = await self.trade_history_repo.get_closed_trades(limit=200)
+                                recent_trades = [
+                                    t for t in closed_trades
+                                    if t.exit_ts is not None and (t.exit_ts.replace(tzinfo=timezone.utc) if t.exit_ts.tzinfo is None else t.exit_ts) > thirty_days_ago
+                                ]
+                                if recent_trades:
+                                    total_trades = len(recent_trades)
+                                    win_count = sum(1 for t in recent_trades if t.label == "BUY_BENAR")
+                                    win_rate_30d = max(0.0, min(float(win_count) / total_trades, 1.0))
+                                    avg_holding_time_minutes = float(sum(t.holding_time_minutes for t in recent_trades)) / total_trades
+                                    typical_trade_size_usd = float(sum(t.position_size_usd for t in recent_trades)) / total_trades
+                                    kill_exits = sum(1 for t in recent_trades if t.exit_reason and t.exit_reason.startswith("kill_switch"))
+                                    past_exit_pattern_score = float(kill_exits) / total_trades
+                            except Exception:
+                                pass
+                                
+                        sol_usd_momentum = self._calculate_sol_usd_momentum()
+                        volume_ratio = snapshot.volume_24h / snapshot.liquidity_usd if snapshot.liquidity_usd > 0 else 0.0
+                        
+                        fv = FeatureVector(
+                            token_address=mint,
+                            wallet_source="new_token_discovery",
+                            signature="discovery_sig_" + mint[:8],
+                            timestamp=now,
+                            position_size_usd=500.0,
+                            token_age_minutes=token_age,
+                            liquidity_pool_depth=max(0.0, snapshot.liquidity_usd),
+                            slippage_actual=0.01,
+                            cluster_score=1.0,
+                            win_rate_30d=win_rate_30d,
+                            avg_holding_time_minutes=avg_holding_time_minutes,
+                            typical_trade_size_usd=typical_trade_size_usd,
+                            past_exit_pattern_score=past_exit_pattern_score,
+                            sol_usd_momentum=sol_usd_momentum,
+                            token_volume_liquidity_ratio=volume_ratio,
+                            hour_of_day_utc=now.hour
+                        )
+                        
+                        pred_result = PredictionResult(
+                            direction="BUY",
+                            confidence_score=score,
+                            target_price_estimate=0.05, # default 5% target offset
+                            token_address=mint,
+                            wallet_source="new_token_discovery",
+                            signature=fv.signature,
+                            timestamp=now,
+                            cooldown_already_cleared=False
+                        )
+                        
+                        logger.info(f"[DISCOVERY] [ACTIVE TRADE] Triggering active trade evaluation for {mint}...")
+                        # Run safety checks which will trigger AutoTradeExecutor automatically if passed
+                        asyncio.create_task(self.safety_check_gate.evaluate_safety(pred_result, fv))
+                    except Exception as exec_err:
+                        logger.error(f"[DISCOVERY] [ACTIVE TRADE] Error triggering active trade flow: {exec_err}", exc_info=True)
 
         return discovered_opportunities
 
