@@ -76,10 +76,14 @@ class FeatureExtractor(IFeatureExtractor):
             )
             slippage_actual = 0.01
 
-        # Cluster score: compute using shared domain pure function
-        from app.domain.cluster_logic import compute_cluster_score
-        from app.use_cases.dashboard_query import get_all_signal_events
-        recent_events = get_all_signal_events()
+        # Cluster score: compute using shared domain pure function.
+        # IMPORTANT: reads from _cluster_event_log (NO dedup) — NOT from _signal_log (which
+        # de-dups per-token per 30 min and would silently discard the second wallet's event).
+        from app.domain.cluster_logic import compute_cluster_score, append_cluster_event, get_all_cluster_events
+        # Register this trigger event in the non-deduped cluster log BEFORE reading it,
+        # so future triggers from other wallets can detect this one as a cluster peer.
+        append_cluster_event(wallet_address=wallet_source, token_mint=token_address, timestamp=timestamp)
+        recent_events = get_all_cluster_events()
         cluster_score = compute_cluster_score(
             target_wallet=wallet_source,
             target_token=token_address,

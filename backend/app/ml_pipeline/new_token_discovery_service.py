@@ -408,15 +408,17 @@ class NewTokenDiscoveryService:
             token_age_minutes = max(0.0, (now - snapshot.pair_created_at).total_seconds() / 60.0)
 
         liquidity_pool_depth = max(0.0, snapshot.liquidity_usd)
-        logger.warning(
-            f"[SLIPPAGE] Actual execution slippage not available in discovery phase for token {token_mint[:8]}... "
-            f"Falling back to default slippage_actual 0.01 (1%)."
-        )
+        # STRUCTURAL LIMITATION (not a conditional fallback):
+        # slippage_actual cannot be computed in the discovery path because there is no
+        # swap execution context here — only a market snapshot is available.
+        # This is permanently 0.01 on this path. See GAP-6 audit (2026-07-31).
         slippage_actual = 0.01
 
-        from app.domain.cluster_logic import compute_cluster_score
-        from app.use_cases.dashboard_query import get_all_signal_events
-        recent_events = get_all_signal_events()
+        from app.domain.cluster_logic import compute_cluster_score, append_cluster_event, get_all_cluster_events
+        # IMPORTANT: reads from _cluster_event_log (NO dedup) — NOT from _signal_log (which
+        # de-dups per-token per 30 min and would silently discard the second wallet's event).
+        # Discovery engine is not an actual wallet, so no need to append itself to cluster log here.
+        recent_events = get_all_cluster_events()
         cluster_score = compute_cluster_score(
             target_wallet="DISCOVERY_ENGINE",
             target_token=token_mint,

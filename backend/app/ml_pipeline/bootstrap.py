@@ -878,12 +878,16 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
             window_minutes=settings.TRIGGER_WINDOW_MINUTES
         )
 
-        # Historical RPC swap data does not contain pre-quote price.
-        # Fallback to default 0.01 for historical bootstrap reconstruction with explicit warning log.
-        logger.warning(
-            f"[SLIPPAGE] Historical RPC swap data for token {position.token_mint[:8]}... does not contain pre-quote price. "
-            f"Falling back to default slippage_actual 0.01 (1%)."
-        )
+        # STRUCTURAL LIMITATION — PERMANENT (not a conditional fallback):
+        # Solana RPC historical data only contains post-execution results:
+        #   amount_token  = actual tokens received (balance delta)
+        #   amount_usd    = USD value of the swap (reconstructed from price snapshot)
+        # The pre-swap quoted price (what was promised before execution) is NOT stored
+        # anywhere in on-chain data — it existed only in the client's memory at tx time.
+        # Therefore slippage_actual = (quoted_price - executed_price) / quoted_price
+        # is structurally impossible to compute from historical RPC reconstruction.
+        # This 0.01 is a fixed historical training default, NOT a fallback that could
+        # ever be filled in at this code path. See GAP-6 audit (2026-07-31).
         slippage_actual = 0.01
 
         return {

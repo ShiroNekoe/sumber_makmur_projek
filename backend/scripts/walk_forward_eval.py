@@ -3,7 +3,7 @@ import sys
 import argparse
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -50,7 +50,8 @@ def label_to_idx(label_str: str) -> int:
     return 0  # HOLD
 
 
-def run_walk_forward_eval(window_days: int = 14, step_days: int = 7, confidence_threshold: float = 0.75):
+def run_walk_forward_eval(window_days: int = 14, step_days: int = 7, confidence_threshold: float = 0.75,
+                          max_sigs_override: Optional[int] = None):
     """
     Executes Out-of-Time Walk-Forward Evaluation across historical trades.
     """
@@ -65,7 +66,12 @@ def run_walk_forward_eval(window_days: int = 14, step_days: int = 7, confidence_
         if not trades:
             logger.info("[WALK-FORWARD EVAL] No DB trades found. Reconstructing real on-chain trades via Solana RPC...")
             from app.ml_pipeline.bootstrap import HistoricalModelBootstrapService, SolanaRpcHistoricalTransactionSource
-            tx_src = SolanaRpcHistoricalTransactionSource(max_signatures_per_wallet=5)
+            tx_src = SolanaRpcHistoricalTransactionSource(
+                # Reads from config.yaml model_bootstrap.max_signatures_per_wallet (currently 500).
+                # During manual dev/test runs, use --max-sigs CLI arg to limit RPC calls and avoid timeouts.
+                # DO NOT hardcode a low value here — production must use the config value.
+                max_signatures_per_wallet=max_sigs_override
+            )
             svc = HistoricalModelBootstrapService(transaction_source=tx_src)
             wallet_events = asyncio.run(svc._fetch_historical_events())
             if wallet_events:
@@ -203,10 +209,20 @@ if __name__ == "__main__":
     parser.add_argument("--window_days", type=int, default=14, help="Days in rolling training window")
     parser.add_argument("--step_days", type=int, default=7, help="Days to step forward for test window")
     parser.add_argument("--confidence", type=float, default=0.75, help="Confidence threshold")
+    parser.add_argument(
+        "--max-sigs", type=int, default=None,
+        dest="max_sigs",
+        help=(
+            "Max RPC signatures to fetch per wallet (default: reads from config.yaml "
+            "model_bootstrap.max_signatures_per_wallet = %(default)s). "
+            "Use a small value (e.g. 5) to limit RPC calls during local dev/test."
+        )
+    )
     args = parser.parse_args()
 
     run_walk_forward_eval(
         window_days=args.window_days,
         step_days=args.step_days,
-        confidence_threshold=args.confidence
+        confidence_threshold=args.confidence,
+        max_sigs_override=args.max_sigs if args.max_sigs else settings.BOOTSTRAP_MAX_SIGNATURES_PER_WALLET,
     )
