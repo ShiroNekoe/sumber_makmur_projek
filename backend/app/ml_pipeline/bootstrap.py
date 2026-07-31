@@ -867,12 +867,22 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
         liquidity = max(0.0, position.entry_snapshot.liquidity_usd)
         volume_ratio = position.entry_snapshot.volume_24h / liquidity if liquidity > 0 else 0.0
 
+        # Cluster score: 1.0 if multiple wallets bought this same token within 5 minutes window, 0.0 otherwise
+        cluster_score = 0.0
+        same_token_trades = [
+            p for p in prior_trades
+            if getattr(p, "token_mint", "") == position.token_mint and getattr(p, "wallet_address", None) != position.wallet_address
+            and abs((p.entry_ts - position.entry_ts).total_seconds()) <= 300
+        ]
+        if same_token_trades:
+            cluster_score = 1.0
+
         return {
             "position_size_usd": float(entry_value),
             "token_age_minutes": float(token_age_minutes),
             "liquidity_pool_depth": float(liquidity),
             "slippage_actual": 0.01,
-            "cluster_score": 1.0,
+            "cluster_score": float(cluster_score),
             "win_rate_30d": float(max(0.0, min(win_rate, 1.0))),
             "avg_holding_time_minutes": float(avg_hold),
             "typical_trade_size_usd": float(typical_size),

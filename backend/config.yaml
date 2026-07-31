@@ -15,9 +15,10 @@ decision_gate:
 risk:
   risk_pct_per_trade: 0.01 # Fixed 1% dari equity
   max_concurrent_positions: 5
-  max_daily_loss_pct: 0.05
-  max_weekly_loss_pct: 0.15
+  max_daily_loss_pct: 0.04          # Dikonfirmasi pemilik sistem: 4% harian (2026-07-31)
+  max_weekly_loss_pct: 0.28         # Dikonfirmasi pemilik sistem: 28% mingguan (2026-07-31)
   max_total_exposure_usd: 2500.0
+  initial_baseline_equity_usd: 100.0 # Initial baseline equity dari portofolio wallet
   circuit_breaker_reset_utc: "00:00"
 
 trailing_tp:

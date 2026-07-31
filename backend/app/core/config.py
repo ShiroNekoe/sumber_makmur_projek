@@ -56,9 +56,10 @@ class Settings(BaseSettings):
     CONFIDENCE_THRESHOLD: float = 0.75
     RISK_PCT_PER_TRADE: float = 0.01
     RISK_MAX_CONCURRENT_POSITIONS: int = 3
-    RISK_MAX_DAILY_LOSS_PCT: float = 0.05
-    RISK_MAX_WEEKLY_LOSS_PCT: float = 0.15
+    RISK_MAX_DAILY_LOSS_PCT: float = 0.04
+    RISK_MAX_WEEKLY_LOSS_PCT: float = 0.28
     RISK_MAX_TOTAL_EXPOSURE_USD: float = 2500.0
+    INITIAL_BASELINE_EQUITY_USD: float = 100.0
     RISK_CIRCUIT_BREAKER_RESET_UTC: str = "00:00"
     
     TRAILING_TP_TIERS: List[Dict[str, Any]] = [
@@ -244,6 +245,7 @@ class Settings(BaseSettings):
         self.RISK_MAX_DAILY_LOSS_PCT = rk.get("max_daily_loss_pct", self.RISK_MAX_DAILY_LOSS_PCT)
         self.RISK_MAX_WEEKLY_LOSS_PCT = rk.get("max_weekly_loss_pct", self.RISK_MAX_WEEKLY_LOSS_PCT)
         self.RISK_MAX_TOTAL_EXPOSURE_USD = rk.get("max_total_exposure_usd", self.RISK_MAX_TOTAL_EXPOSURE_USD)
+        self.INITIAL_BASELINE_EQUITY_USD = rk.get("initial_baseline_equity_usd", self.INITIAL_BASELINE_EQUITY_USD)
         self.RISK_CIRCUIT_BREAKER_RESET_UTC = rk.get("circuit_breaker_reset_utc", self.RISK_CIRCUIT_BREAKER_RESET_UTC)
         
         # Trailing TP

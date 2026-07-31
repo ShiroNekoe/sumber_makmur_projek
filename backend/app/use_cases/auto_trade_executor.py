@@ -90,8 +90,8 @@ class AutoTradeExecutor:
             current_exposure_usd = sum(getattr(p, "position_size_usd", 0.0) or 0.0 for p in open_positions)
             max_exposure_usd = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 2500.0)
             
-            # Position sizing estimate for new entry (default baseline evaluation)
-            estimated_entry_usd = 500.0
+            # Position sizing estimate for new entry (derived from feature_vector or real sizing rule: (equity * 1%) / 10% SL)
+            estimated_entry_usd = float(feature_vector.position_size_usd if (feature_vector and feature_vector.position_size_usd) else 100.0)
             if current_exposure_usd + estimated_entry_usd > max_exposure_usd:
                 logger.warning(
                     f"[AUTO TRADE] [BLOCKED] Total USD Exposure cap reached. "

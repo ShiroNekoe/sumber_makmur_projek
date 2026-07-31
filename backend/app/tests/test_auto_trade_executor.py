@@ -81,7 +81,7 @@ class TestAutoTradeExecutor(unittest.IsolatedAsyncioTestCase):
         self.mock_position_repo.add_position.assert_called_once()
         self.mock_cooldown_repo.set_cooldown.assert_called_once()
 
-    async def test_correlation_cap_blocked(self):
+    async def test_position_count_cap_blocked(self):
         # Mock settings to have custom cap of 2 positions
         from app.core.config import settings
         original_cap = settings.RISK_MAX_CONCURRENT_POSITIONS
@@ -106,7 +106,7 @@ class TestAutoTradeExecutor(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.RISK_MAX_CONCURRENT_POSITIONS = original_cap
 
-    async def test_correlation_cap_database_failure_failsafe(self):
+    async def test_position_count_cap_database_failure_failsafe(self):
         # Mock database query failure
         self.mock_position_repo.get_open_positions = AsyncMock(side_effect=Exception("SQLite connection timeout"))
         

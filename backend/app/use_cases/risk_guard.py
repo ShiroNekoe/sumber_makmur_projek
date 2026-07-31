@@ -152,7 +152,12 @@ class PortfolioRiskGuard:
             except Exception as e:
                 logger.debug(f"[RISK GUARD] Could not fetch baseline equity snapshot: {e}")
 
-        return 1000.0  # Safe default baseline equity
+        fallback_equity = getattr(settings, "INITIAL_BASELINE_EQUITY_USD", 100.0)
+        logger.warning(
+            f"[RISK GUARD] No saved EquitySnapshotORM found before {cutoff_time.isoformat()}. "
+            f"Falling back to configured INITIAL_BASELINE_EQUITY_USD (${fallback_equity:.2f})."
+        )
+        return fallback_equity
 
     async def _broadcast_circuit_breaker_event(
         self,
