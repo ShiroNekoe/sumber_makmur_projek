@@ -110,7 +110,14 @@ class SafetyCheckGate(ITokenSafetyCheckGate):
         if passed and settings.SAFETY_REQUIRE_MINT_AUTHORITY_REVOKED and not mint_revoked:
             passed = False
             reason = "mint_authority_not_revoked"
- 
+
+        # Deployer Holding check (FASE 3)
+        deployer_holding = float(safety_info.get("deployer_holding_pct", 0.0) or 0.0)
+        max_deployer_holding = getattr(settings, "SAFETY_MAX_DEPLOYER_HOLDING_PCT", 0.10)
+        if passed and deployer_holding >= max_deployer_holding:
+            passed = False
+            reason = f"deployer_holding_too_high: deployer owns {deployer_holding:.2%} (exceeds max allowed {max_deployer_holding:.2%})"
+
         result = SafetyCheckResult(
             token_address=token_address,
             passed=passed,
@@ -119,6 +126,7 @@ class SafetyCheckGate(ITokenSafetyCheckGate):
             contract_verified=contract_verified,
             top_10_holders_share=top_10_share,
             mint_authority_revoked=mint_revoked,
+            deployer_holding_pct=deployer_holding,
             timestamp=datetime.now(timezone.utc)
         )
  

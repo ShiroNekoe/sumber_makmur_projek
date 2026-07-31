@@ -7,7 +7,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("debug_ws")
 
 async def debug_ws():
-    url = "wss://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"
+    import os
+    url = os.getenv("SOLANA_RPC_PRIMARY_URL", "").replace("https://", "wss://") or "wss://api.mainnet-beta.solana.com"
     async with websockets.connect(url) as ws:
         sub = {
             "jsonrpc": "2.0",

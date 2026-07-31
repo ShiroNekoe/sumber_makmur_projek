@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional, List, Any
 
 from app.core.config import settings
 from app.domain.models import PredictionResult, FeatureVector, OpenPosition
@@ -20,10 +20,12 @@ class TradeGuard:
     def __init__(
         self,
         position_repo: IPositionRepository,
-        cooldown_repo: ICooldownRepository
+        cooldown_repo: ICooldownRepository,
+        risk_guard: Optional[Any] = None
     ):
         self.position_repo = position_repo
         self.cooldown_repo = cooldown_repo
+        self.risk_guard = risk_guard
 
     async def validate_trade(
         self,
@@ -37,6 +39,12 @@ class TradeGuard:
         Validates if a trade meets all parameters and can proceed.
         Returns: (bool_allowed, reason_string)
         """
+        # -1. Portfolio Circuit Breaker Check (FASE 1)
+        if hasattr(self, "risk_guard") and self.risk_guard is not None:
+            allowed, risk_reason = await self.risk_guard.is_trading_allowed()
+            if not allowed:
+                return False, f"Blocked: {risk_reason}"
+
         token_address = prediction.token_address
         wallet_source = prediction.wallet_source
         

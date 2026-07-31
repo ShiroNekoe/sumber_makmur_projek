@@ -15,14 +15,16 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Sumber Makmur System"
     API_V1_STR: str = "/api/v1"
-    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:5173"]
+    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:5174"]
     
     # RPC and indexing endpoints
-    SOLANA_RPC_URL: str = "https://convincing-orbital-gas.solana-mainnet.quiknode.pro/21ba38b9733739c54695b200c406dfa2e03ca0de"
-    SOLANA_RPC_FALLBACK_URL: str = "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"
+    SOLANA_RPC_PRIMARY_URL: Optional[str] = None
+    SOLANA_RPC_SECONDARY_URL: Optional[str] = None
+    SOLANA_RPC_URL: str = "https://api.mainnet-beta.solana.com"
+    SOLANA_RPC_FALLBACK_URL: str = "https://api.mainnet-beta.solana.com"
     
-    RPC_PRIMARY_URL: str = "https://convincing-orbital-gas.solana-mainnet.quiknode.pro/21ba38b9733739c54695b200c406dfa2e03ca0de"
-    RPC_SECONDARY_URL: str = "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"
+    RPC_PRIMARY_URL: str = "https://api.mainnet-beta.solana.com"
+    RPC_SECONDARY_URL: str = "https://api.mainnet-beta.solana.com"
     RPC_MAX_RETRY: int = 5
     
     # Target whale wallets to track (Active on-chain Solana wallets)
@@ -54,6 +56,10 @@ class Settings(BaseSettings):
     CONFIDENCE_THRESHOLD: float = 0.75
     RISK_PCT_PER_TRADE: float = 0.01
     RISK_MAX_CONCURRENT_POSITIONS: int = 3
+    RISK_MAX_DAILY_LOSS_PCT: float = 0.05
+    RISK_MAX_WEEKLY_LOSS_PCT: float = 0.15
+    RISK_MAX_TOTAL_EXPOSURE_USD: float = 2500.0
+    RISK_CIRCUIT_BREAKER_RESET_UTC: str = "00:00"
     
     TRAILING_TP_TIERS: List[Dict[str, Any]] = [
         {"r_min": 1, "r_max": 2, "trail_pct": None},
@@ -115,6 +121,7 @@ class Settings(BaseSettings):
     SAFETY_REQUIRE_LP_LOCKED: bool = True
     SAFETY_REQUIRE_CONTRACT_VERIFIED: bool = True
     SAFETY_REQUIRE_MINT_AUTHORITY_REVOKED: bool = True
+    SAFETY_MAX_DEPLOYER_HOLDING_PCT: float = 0.10
 
     # Config Versioning Info
     CONFIG_VERSION_TIMESTAMP: str = datetime.now(timezone.utc).isoformat()
@@ -210,7 +217,7 @@ class Settings(BaseSettings):
         rpc = config_data.get("rpc", {})
         for url_key in ["primary_url", "secondary_url"]:
             url = rpc.get(url_key)
-            if not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://") or url.startswith("ws://") or url.startswith("wss://")):
+            if not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://") or url.startswith("ws://") or url.startswith("wss://") or url.startswith("${") or url == ""):
                 raise ValueError(f"rpc.{url_key} must be a valid HTTP/HTTPS or WS/WSS URL (got: '{url}')")
 
     def apply_config(self, config_data: dict, hot_reload: bool = False):
@@ -234,6 +241,10 @@ class Settings(BaseSettings):
         rk = config_data.get("risk", {})
         self.RISK_PCT_PER_TRADE = rk.get("risk_pct_per_trade", self.RISK_PCT_PER_TRADE)
         self.RISK_MAX_CONCURRENT_POSITIONS = rk.get("max_concurrent_positions", self.RISK_MAX_CONCURRENT_POSITIONS)
+        self.RISK_MAX_DAILY_LOSS_PCT = rk.get("max_daily_loss_pct", self.RISK_MAX_DAILY_LOSS_PCT)
+        self.RISK_MAX_WEEKLY_LOSS_PCT = rk.get("max_weekly_loss_pct", self.RISK_MAX_WEEKLY_LOSS_PCT)
+        self.RISK_MAX_TOTAL_EXPOSURE_USD = rk.get("max_total_exposure_usd", self.RISK_MAX_TOTAL_EXPOSURE_USD)
+        self.RISK_CIRCUIT_BREAKER_RESET_UTC = rk.get("circuit_breaker_reset_utc", self.RISK_CIRCUIT_BREAKER_RESET_UTC)
         
         # Trailing TP
         tt = config_data.get("trailing_tp", {})
@@ -293,6 +304,7 @@ class Settings(BaseSettings):
         self.SAFETY_REQUIRE_LP_LOCKED = sc.get("require_lp_locked", self.SAFETY_REQUIRE_LP_LOCKED)
         self.SAFETY_REQUIRE_CONTRACT_VERIFIED = sc.get("require_contract_verified", self.SAFETY_REQUIRE_CONTRACT_VERIFIED)
         self.SAFETY_REQUIRE_MINT_AUTHORITY_REVOKED = sc.get("require_mint_authority_revoked", self.SAFETY_REQUIRE_MINT_AUTHORITY_REVOKED)
+        self.SAFETY_MAX_DEPLOYER_HOLDING_PCT = sc.get("max_deployer_holding_pct", self.SAFETY_MAX_DEPLOYER_HOLDING_PCT)
 
         # Blacklist
         bl = config_data.get("blacklist", {})
@@ -302,18 +314,27 @@ class Settings(BaseSettings):
         # RPC Parameters Validation (Restart Needed Warn for Hot-Reload)
         rp = config_data.get("rpc", {})
         if not hot_reload:
-            # Prioritize environment variables from .env if they are customized
-            env_primary = os.getenv("RPC_PRIMARY_URL") or os.getenv("SOLANA_RPC_URL")
-            if env_primary and env_primary != "https://api.mainnet-beta.solana.com":
+            env_primary = os.getenv("SOLANA_RPC_PRIMARY_URL") or os.getenv("RPC_PRIMARY_URL") or os.getenv("SOLANA_RPC_URL")
+            if env_primary and env_primary.strip() and not env_primary.startswith("${"):
                 self.RPC_PRIMARY_URL = env_primary
             else:
-                self.RPC_PRIMARY_URL = rp.get("primary_url", self.RPC_PRIMARY_URL)
+                yaml_primary = rp.get("primary_url")
+                if yaml_primary and yaml_primary.strip() and not yaml_primary.startswith("${"):
+                    self.RPC_PRIMARY_URL = yaml_primary
+                    logger.warning("[SECURITY WARNING] Reading RPC Primary URL from config.yaml fallback. Please configure SOLANA_RPC_PRIMARY_URL in .env instead.")
+                else:
+                    self.RPC_PRIMARY_URL = "https://api.mainnet-beta.solana.com"
 
-            env_secondary = os.getenv("RPC_SECONDARY_URL") or os.getenv("SOLANA_RPC_FALLBACK_URL")
-            if env_secondary and env_secondary != "https://api.devnet.solana.com" and env_secondary != "https://api.mainnet-beta.solana.com":
+            env_secondary = os.getenv("SOLANA_RPC_SECONDARY_URL") or os.getenv("RPC_SECONDARY_URL") or os.getenv("SOLANA_RPC_FALLBACK_URL")
+            if env_secondary and env_secondary.strip() and not env_secondary.startswith("${"):
                 self.RPC_SECONDARY_URL = env_secondary
             else:
-                self.RPC_SECONDARY_URL = rp.get("secondary_url", self.RPC_SECONDARY_URL)
+                yaml_secondary = rp.get("secondary_url")
+                if yaml_secondary and yaml_secondary.strip() and not yaml_secondary.startswith("${"):
+                    self.RPC_SECONDARY_URL = yaml_secondary
+                    logger.warning("[SECURITY WARNING] Reading RPC Secondary URL from config.yaml fallback. Please configure SOLANA_RPC_SECONDARY_URL in .env instead.")
+                else:
+                    self.RPC_SECONDARY_URL = "https://api.mainnet-beta.solana.com"
 
             self.RPC_MAX_RETRY = rp.get("max_retry", self.RPC_MAX_RETRY)
             self.SOLANA_RPC_URL = self.RPC_PRIMARY_URL

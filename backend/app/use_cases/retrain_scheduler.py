@@ -193,17 +193,11 @@ class RetrainScheduler:
             df_X = pd.DataFrame(feature_data)
             df_y = np.array(labels)
             
-            # 4. Train/Val Split (80/20 stratified)
-            # Basic manual stratified split
-            np.random.seed(42)
-            shuffled_indices = np.random.permutation(n_samples)
-            train_size = int(n_samples * 0.80)
-            
-            train_idx = shuffled_indices[:train_size]
-            val_idx = shuffled_indices[train_size:]
-            
-            X_train, y_train = df_X.iloc[train_idx], df_y[train_idx]
-            X_val, y_val = df_X.iloc[val_idx], df_y[val_idx]
+            # 4. Train/Val Split (80/20 stratified split)
+            from app.ml_pipeline.training_utils import stratified_train_test_split
+            X_train, X_val, y_train, y_val = stratified_train_test_split(
+                df_X.to_numpy(), df_y, test_size=0.20, random_state=42
+            )
             
             # Class imbalance handling (sesuai 03 - Pipeline AI): win rate
             # rendah by design membuat label SALAH jauh lebih banyak dari

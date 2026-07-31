@@ -181,13 +181,23 @@ async def lifespan(app: FastAPI):
             safety_check_gate=safety_check_gate
         )
         
+        from app.use_cases.risk_guard import PortfolioRiskGuard
+        risk_guard = PortfolioRiskGuard(
+            position_repo=position_repo,
+            trade_history_repo=trade_history_repo,
+            token_info_service=token_info_service,
+            db_session=db
+        )
+        app.state.risk_guard = risk_guard
+        
         auto_trade_executor = AutoTradeExecutor(
             position_repo=position_repo,
             cooldown_repo=cooldown_repo,
             model_registry_repo=model_registry_repo,
             trade_history_repo=trade_history_repo,
             token_info_service=token_info_service,
-            token_safety_service=safety_service
+            token_safety_service=safety_service,
+            risk_guard=risk_guard
         )
         safety_check_gate.auto_trade_executor = auto_trade_executor
         

@@ -232,13 +232,22 @@ class SolanaTokenSafetyService(ITokenSafetyService):
                 "top_10_holders_share": 0.12,
                 "mint_authority_revoked": False
             }
+        elif token_address == "UnsafeDeployerxxxxxxxxxxxxxxxxxxxxxx":
+            return {
+                "liquidity_locked": True,
+                "contract_verified": True,
+                "top_10_holders_share": 0.12,
+                "mint_authority_revoked": True,
+                "deployer_holding_pct": 0.25  # 25% (> 10% threshold)
+            }
         elif token_address == "TimeoutTokenxxxxxxxxxxxxxxxxxxxxxxxxx":
             await asyncio.sleep(6.0)  # Sleep longer than 5 seconds timeout limit
             return {
                 "liquidity_locked": True,
                 "contract_verified": True,
                 "top_10_holders_share": 0.12,
-                "mint_authority_revoked": True
+                "mint_authority_revoked": True,
+                "deployer_holding_pct": 0.02
             }
 
         # 2. Production DexScreener Fetch with retry 1x (F-19)

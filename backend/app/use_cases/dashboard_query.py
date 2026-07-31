@@ -173,6 +173,10 @@ class DashboardQueryService:
             "open_positions_count": 0,
             "confidence_threshold_pct": round(settings.CONFIDENCE_THRESHOLD * 100, 1),
             "active_model_version": active_model_ver,
+            "current_exposure_usd": 0.0,
+            "max_exposure_usd": getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 2500.0),
+            "circuit_breaker_active": False,
+            "deployer_blocks_24h": 0,
         }
         try:
             trades = await self.trade_history_repo.get_closed_trades(limit=500, offset=0, exclude_bootstrap=True)
@@ -191,6 +195,7 @@ class DashboardQueryService:
             recent_signals = await self.get_recent_signals(hours=24)
             stats["total_signals_24h"] = len(recent_signals)
             stats["alerts_fired_24h"] = len([s for s in recent_signals if s.get("event") == "ALERT"])
+            stats["deployer_blocks_24h"] = len([s for s in recent_signals if "deployer_holding" in str(s.get("reason", ""))])
             
             # Count triggers_today: signals generated today (midnight UTC to now)
             today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -203,11 +208,11 @@ class DashboardQueryService:
         except Exception as e:
             logger.warning(f"[DASHBOARD QUERY] Signal stats error: {e}")
 
-
         try:
             if self.position_repo:
                 open_pos = await self.position_repo.get_open_positions()
                 stats["open_positions_count"] = len(open_pos)
+                stats["current_exposure_usd"] = sum(getattr(p, "position_size_usd", 0.0) or 0.0 for p in open_pos)
         except Exception as e:
             logger.warning(f"[DASHBOARD QUERY] Open positions stats error: {e}")
 

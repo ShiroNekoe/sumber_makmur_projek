@@ -35,3 +35,5 @@ backend/0.21.0
 # Dynamic XGBoost model versions (keep only v0.json if necessary)
 backend/models/v[0-9]*.json
 models/v[0-9]*.json
+# Logs
+*.log

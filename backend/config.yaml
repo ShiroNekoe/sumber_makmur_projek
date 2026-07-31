@@ -15,6 +15,10 @@ decision_gate:
 risk:
   risk_pct_per_trade: 0.01 # Fixed 1% dari equity
   max_concurrent_positions: 5
+  max_daily_loss_pct: 0.05
+  max_weekly_loss_pct: 0.15
+  max_total_exposure_usd: 2500.0
+  circuit_breaker_reset_utc: "00:00"
 
 trailing_tp:
   tiers:
@@ -65,6 +69,7 @@ safety_check:
   require_lp_locked: false          # Dinonaktifkan — sebagian besar pool Solana tidak lock LP
   require_contract_verified: false  # Dinonaktifkan — Solana tidak ada konsep contract verified seperti ETH
   require_mint_authority_revoked: true  # Tetap aktif — ini penting
+  max_deployer_holding_pct: 0.10   # Maksimal 10% kepemilikan dompet creator/deployer
 
 discovery:
   occurrence_threshold: 3
@@ -72,8 +77,9 @@ discovery:
   trade_enabled: true
 
 rpc:
-  primary_url: "https://convincing-orbital-gas.solana-mainnet.quiknode.pro/21ba38b9733739c54695b200c406dfa2e03ca0de"
-  secondary_url: "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"
+  # Konfigurasi RPC URL ber-API Key HARUS diatur melalui .env (SOLANA_RPC_PRIMARY_URL & SOLANA_RPC_SECONDARY_URL)
+  primary_url: "${SOLANA_RPC_PRIMARY_URL}"
+  secondary_url: "${SOLANA_RPC_SECONDARY_URL}"
   fallback_url: "https://api.mainnet-beta.solana.com"
   max_retry: 5
 

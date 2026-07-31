@@ -8,8 +8,10 @@ def get_tx(sig):
         'method': 'getTransaction',
         'params': [sig, {'encoding': 'json', 'maxSupportedTransactionVersion': 0}]
     }
+    import os
+    url = os.getenv("SOLANA_RPC_PRIMARY_URL") or "https://api.mainnet-beta.solana.com"
     req = urllib.request.Request(
-        'https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51',
+        url,
         data=json.dumps(payload).encode(),
         headers={'Content-Type': 'application/json'}
     )

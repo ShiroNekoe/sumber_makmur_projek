@@ -2,7 +2,8 @@ import json
 import urllib.request
 import urllib.error
 
-url = "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"
+import os
+url = os.getenv("SOLANA_RPC_PRIMARY_URL") or "https://api.mainnet-beta.solana.com"
 payload = {
     "jsonrpc": "2.0",
     "id": 1,

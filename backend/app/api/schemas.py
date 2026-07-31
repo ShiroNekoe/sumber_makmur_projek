@@ -98,8 +98,10 @@ class PositionResponse(BaseModel):
     model_version: str
     entry_ts: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True,
+        "protected_namespaces": ()
+    }
 
 
 class PositionListResponse(BaseModel):
@@ -120,6 +122,10 @@ class DashboardStatsResponse(BaseModel):
     open_positions_count: int
     confidence_threshold_pct: float      # From config.yaml (e.g. 75.0)
     active_model_version: str
+    current_exposure_usd: Optional[float] = 0.0
+    max_exposure_usd: Optional[float] = 2500.0
+    circuit_breaker_active: Optional[bool] = False
+    deployer_blocks_24h: Optional[int] = 0
 
 
 # ─── Wallet Candidate Schemas ────────────────────────────────────────────────

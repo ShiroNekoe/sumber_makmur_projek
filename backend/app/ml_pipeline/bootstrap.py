@@ -891,7 +891,15 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
 
     def _train_and_save_model(self, features: pd.DataFrame, labels: np.ndarray, models_dir: str) -> None:
         os.makedirs(models_dir, exist_ok=True)
-        dtrain = xgb.DMatrix(features, label=labels, weight=compute_class_sample_weights(labels, num_class=3))
+        from app.ml_pipeline.training_utils import stratified_train_test_split
+        
+        X_train, X_val, y_train, y_val = stratified_train_test_split(
+            features.to_numpy(), labels, test_size=0.20, random_state=42
+        )
+        
+        dtrain = xgb.DMatrix(X_train, label=y_train, weight=compute_class_sample_weights(y_train, num_class=3))
+        dval = xgb.DMatrix(X_val, label=y_val)
+        
         params = {
             "max_depth": 6,
             "learning_rate": 0.05,
@@ -900,14 +908,28 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
             "seed": 42,
             "tree_method": "hist",
         }
-        model = xgb.train(params, dtrain, num_boost_round=300)
+        evals_list = [(dval, "val")] if len(X_val) > 0 else [(dtrain, "train")]
+        model = xgb.train(
+            params,
+            dtrain,
+            num_boost_round=300,
+            evals=evals_list,
+            verbose_eval=False
+        )
         model.save_model(os.path.join(models_dir, "v0.json"))
 
     def _training_accuracy(self, features: pd.DataFrame, labels: np.ndarray, models_dir: str) -> float:
+        from app.ml_pipeline.training_utils import stratified_train_test_split
+        X_train, X_val, y_train, y_val = stratified_train_test_split(
+            features.to_numpy(), labels, test_size=0.20, random_state=42
+        )
+        if len(y_val) == 0:
+            X_val, y_val = features.to_numpy(), labels
+
         model = xgb.Booster()
         model.load_model(os.path.join(models_dir, "v0.json"))
-        preds = np.argmax(model.predict(xgb.DMatrix(features)), axis=1)
-        return float(np.sum(preds == labels) / len(labels))
+        preds = np.argmax(model.predict(xgb.DMatrix(X_val)), axis=1)
+        return float(np.sum(preds == y_val) / len(y_val)) if len(y_val) > 0 else 1.0
 
     async def _persist_bootstrap_outputs(
         self,

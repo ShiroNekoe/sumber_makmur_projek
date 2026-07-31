@@ -2,7 +2,7 @@ import logging
 import uuid
 import asyncio
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Any
 
 from app.core.config import settings
 from app.domain.models import PredictionResult, FeatureVector, OpenPosition
@@ -31,6 +31,7 @@ class AutoTradeExecutor:
         trade_history_repo = None, # optional inject to query active positions or history
         token_info_service: Optional[ITokenInfoService] = None,
         token_safety_service: Optional[ITokenSafetyService] = None,
+        risk_guard: Optional[Any] = None
     ):
         self.position_repo = position_repo
         self.cooldown_repo = cooldown_repo
@@ -43,6 +44,7 @@ class AutoTradeExecutor:
         # namun fail-open (lihat ParallelExecutionEngine._check_onchain_kill_signals).
         self.token_info_service = token_info_service
         self.token_safety_service = token_safety_service
+        self.risk_guard = risk_guard
 
         self.lock = asyncio.Lock()
 
@@ -57,7 +59,7 @@ class AutoTradeExecutor:
             
             logger.info(f"[AUTO TRADE] Starting trade execution check for token: {token_address}")
 
-            # 1. Check Correlation Cap (F-16)
+            # 1. Check Position Count Cap (F-16)
             try:
                 open_positions = await self.position_repo.get_open_positions()
             except Exception as db_err:
@@ -67,7 +69,7 @@ class AutoTradeExecutor:
             max_positions = getattr(settings, "RISK_MAX_CONCURRENT_POSITIONS", 3)
             if len(open_positions) >= max_positions:
                 logger.warning(
-                    f"[AUTO TRADE] [BLOCKED] Correlation cap reached. "
+                    f"[AUTO TRADE] [BLOCKED] Position Count cap reached. "
                     f"Token: {token_address} blocked. "
                     f"Active positions: {len(open_positions)}/{max_positions}. "
                     f"Timestamp: {datetime.now(timezone.utc).isoformat()}"
@@ -79,6 +81,30 @@ class AutoTradeExecutor:
                         "event": "POSITION_CAP_REACHED",
                         "open_count": len(open_positions),
                         "max_count": max_positions,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                })
+                return None
+
+            # 1b. Check Real USD Exposure Cap (FASE 1)
+            current_exposure_usd = sum(getattr(p, "position_size_usd", 0.0) or 0.0 for p in open_positions)
+            max_exposure_usd = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 2500.0)
+            
+            # Position sizing estimate for new entry (default baseline evaluation)
+            estimated_entry_usd = 500.0
+            if current_exposure_usd + estimated_entry_usd > max_exposure_usd:
+                logger.warning(
+                    f"[AUTO TRADE] [BLOCKED] Total USD Exposure cap reached. "
+                    f"Token: {token_address} blocked. "
+                    f"Current exposure: ${current_exposure_usd:.2f}, Max cap: ${max_exposure_usd:.2f}. "
+                    f"Timestamp: {datetime.now(timezone.utc).isoformat()}"
+                )
+                await ws_manager.broadcast({
+                    "type": "exposure_cap_reached",
+                    "data": {
+                        "event": "EXPOSURE_CAP_REACHED",
+                        "current_exposure_usd": current_exposure_usd,
+                        "max_exposure_usd": max_exposure_usd,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                 })
@@ -170,7 +196,7 @@ class AutoTradeExecutor:
                 return None
 
             # Perform strict validation checks via TradeGuard
-            guard = TradeGuard(self.position_repo, self.cooldown_repo)
+            guard = TradeGuard(self.position_repo, self.cooldown_repo, risk_guard=self.risk_guard)
             allowed, reason = await guard.validate_trade(
                 prediction=prediction,
                 feature_vector=feature_vector,

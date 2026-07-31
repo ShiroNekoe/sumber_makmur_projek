@@ -24,11 +24,11 @@ logger = logging.getLogger("discover_niche_wallets")
 
 # API Keys and URLs
 DEXSCREENER_BASE = "https://api.dexscreener.com"
-HELIUS_API_KEY   = "00f9de1e-3d75-46e0-9e7e-fee21a442a51"
-HELIUS_RPC_URL   = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}"
-HELIUS_REST_BASE = f"https://api.helius.xyz/v0"
-QUICKNODE_URL    = "https://convincing-orbital-gas.solana-mainnet.quiknode.pro/21ba38b9733739c54695b200c406dfa2e03ca0de"
+HELIUS_API_KEY   = os.getenv("PUMP_FUN_API_KEY", "")
 PUBLIC_RPC_URL   = "https://api.mainnet-beta.solana.com"
+HELIUS_RPC_URL   = os.getenv("SOLANA_RPC_PRIMARY_URL") or os.getenv("RPC_PRIMARY_URL") or PUBLIC_RPC_URL
+HELIUS_REST_BASE = "https://api.helius.xyz/v0"
+QUICKNODE_URL    = os.getenv("SOLANA_RPC_SECONDARY_URL") or os.getenv("RPC_SECONDARY_URL") or PUBLIC_RPC_URL
 
 # Thresholds
 MIN_WIN_RATE            = 0.62

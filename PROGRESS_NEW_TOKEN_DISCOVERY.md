@@ -99,7 +99,7 @@ Saat server dijalankan (`python -m uvicorn app.main:app`), log backend membuktik
 ### Terminal 1: Backend Server
 ```powershell
 cd backend
-.venv\Scripts\python -m uvicorn app.main:app --port 8000 --reload
+.venv\Scripts\python -m uvicorn app.main:app --port 8002 --reload
 ```
 
 ### Terminal 2: Frontend Dashboard
@@ -108,5 +108,5 @@ cd frontend
 npm run dev
 ```
 
-- **Akses Dashboard**: `http://localhost:5173`
-- **Akses API**: `http://localhost:8000/api/v1`
+- **Akses Dashboard**: `http://localhost:5174`
+- **Akses API**: `http://localhost:8002/api/v1`

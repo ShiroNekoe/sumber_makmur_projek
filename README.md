@@ -39,15 +39,15 @@ Copy-Item backend\.env.example backend\.env
 5. Jalankan backend dengan Uvicorn:
 
 ```powershell
-uvicorn app.main:app --reload --app-dir backend
+uvicorn app.main:app --reload --port 8002 --app-dir backend
 ```
 
 6. Backend akan tersedia di:
 
-- API root: `http://localhost:8000`
-- Health endpoint: `http://localhost:8000/health`
-- Versioned API: `http://localhost:8000/api/v1`
-- WebSocket: `ws://localhost:8000/ws`
+- API root: `http://localhost:8002`
+- Health endpoint: `http://localhost:8002/health`
+- Versioned API: `http://localhost:8002/api/v1`
+- WebSocket: `ws://localhost:8002/ws`
 
 ## Frontend Setup
 
@@ -77,7 +77,7 @@ npm run dev
 
 5. Akses aplikasi di browser:
 
-- Frontend: `http://localhost:5173`
+- Frontend: `http://localhost:5174`
 
 ## Environment Variables
 
@@ -87,17 +87,17 @@ npm run dev
 Default frontend env values:
 
 ```text
-VITE_API_BASE_URL=http://localhost:8000/api/v1
-VITE_WS_BASE_URL=ws://localhost:8000/ws
+VITE_API_BASE_URL=http://localhost:8002/api/v1
+VITE_WS_BASE_URL=ws://localhost:8002/ws
 ```
 
 ## Menjalankan Proyek
 
 Untuk menjalankan keseluruhan proyek, jalankan backend dan frontend di dua terminal terpisah:
 
-1. Jalankan backend di terminal pertama.
-2. Jalankan frontend di terminal kedua.
-3. Buka `http://localhost:5173` di browser.
+1. Jalankan backend di terminal pertama (`uvicorn app.main:app --reload --port 8002 --app-dir backend`).
+2. Jalankan frontend di terminal kedua (`npm run dev`).
+3. Buka `http://localhost:5174` di browser.
 
 ## Verifikasi
 
@@ -115,3 +115,8 @@ npm run build
 - Pastikan `frontend\node_modules` tidak dikomit ke repositori.
 - Gunakan `Copy-Item` untuk membuat file `.env` dari file `.env.example`.
 - Data SQLite dan file konfigurasi lokal tidak perlu didorong ke Git kecuali sengaja ingin disimpan.
+
+## ⚠️ Security Advisory & TODO Manual (Pemilik Sistem)
+
+1. **Revoke Key RPC (Wajib):** Revoke API Key Helius dan QuickNode lama di dashboard penyedia jasa RPC masing-masing, lalu generate key baru dan simpan hanya di berkas `.env` (`SOLANA_RPC_PRIMARY_URL` dan `SOLANA_RPC_SECONDARY_URL`).
+2. **Pembersihan Git History (Opsional & Direkomendasikan):** Karena API Key lama pernah berada di riwayat git publik, pertimbangkan untuk mengubah visibilitas repositori menjadi **Private** atau membersihkan commit history lama menggunakan `git filter-repo`.

@@ -151,6 +151,7 @@ class SafetyCheckResult(BaseModel):
     contract_verified: bool
     top_10_holders_share: float
     mint_authority_revoked: bool
+    deployer_holding_pct: Optional[float] = 0.0
     timestamp: datetime
 
 

@@ -99,8 +99,8 @@ class NewTokenDiscoveryService:
         """
         http_urls = [
             self.rpc_url,
-            getattr(settings, "SOLANA_RPC_FALLBACK_URL", "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"),
-            getattr(settings, "RPC_SECONDARY_URL", "https://mainnet.helius-rpc.com/?api-key=00f9de1e-3d75-46e0-9e7e-fee21a442a51"),
+            getattr(settings, "SOLANA_RPC_FALLBACK_URL", "https://api.mainnet-beta.solana.com"),
+            getattr(settings, "RPC_SECONDARY_URL", "https://api.mainnet-beta.solana.com"),
             "https://api.mainnet-beta.solana.com",
         ]
         wss_urls = []

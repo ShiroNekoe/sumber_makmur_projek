@@ -12,6 +12,8 @@ from app.websocket.manager import manager as ws_manager
 class TestConfigManagement(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.env_patches = {
+            "SOLANA_RPC_PRIMARY_URL": "https://api.mainnet-beta.solana.com",
+            "SOLANA_RPC_SECONDARY_URL": "https://api.devnet.solana.com",
             "RPC_PRIMARY_URL": "https://api.mainnet-beta.solana.com",
             "SOLANA_RPC_URL": "https://api.mainnet-beta.solana.com",
             "RPC_SECONDARY_URL": "https://api.devnet.solana.com",

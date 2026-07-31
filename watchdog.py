@@ -19,7 +19,7 @@ logger = logging.getLogger("watchdog")
 def main():
     restart_count = 0
     # Command to run backend
-    cmd = [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"]
+    cmd = [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8002"]
     
     logger.info("Starting Watchdog process monitoring Solana AI Trading System...")
     

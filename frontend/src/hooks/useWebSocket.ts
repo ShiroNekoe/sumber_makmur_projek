@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useStore } from '../store/useStore'
 
-export const useWebSocket = (url: string = 'ws://localhost:8000/ws') => {
+export const useWebSocket = (url: string = 'ws://localhost:8002/ws') => {
   const socketRef = useRef<WebSocket | null>(null)
   const reconnectDelayRef = useRef<number>(1000) // Initial delay: 1s
   const reconnectTimeoutRef = useRef<number | null>(null)
