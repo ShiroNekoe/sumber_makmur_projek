@@ -65,7 +65,7 @@ def run_walk_forward_eval(window_days: int = 14, step_days: int = 7, confidence_
         if not trades:
             logger.info("[WALK-FORWARD EVAL] No DB trades found. Reconstructing real on-chain trades via Solana RPC...")
             from app.ml_pipeline.bootstrap import HistoricalModelBootstrapService, SolanaRpcHistoricalTransactionSource
-            tx_src = SolanaRpcHistoricalTransactionSource(max_signatures_per_wallet=15)
+            tx_src = SolanaRpcHistoricalTransactionSource(max_signatures_per_wallet=5)
             svc = HistoricalModelBootstrapService(transaction_source=tx_src)
             wallet_events = asyncio.run(svc._fetch_historical_events())
             if wallet_events:
@@ -75,8 +75,8 @@ def run_walk_forward_eval(window_days: int = 14, step_days: int = 7, confidence_
     finally:
         session.close()
 
-    if not trades or len(trades) < 5:
-        logger.warning(f"Insufficient trade history for walk-forward evaluation (found {len(trades)} trades). Minimum 5 required.")
+    if not trades or len(trades) < 20:
+        logger.warning(f"Insufficient trade history for walk-forward evaluation (found {len(trades)} trades). Minimum 20 required.")
         return trades
 
     # Sort trades chronologically
@@ -195,6 +195,7 @@ def run_walk_forward_eval(window_days: int = 14, step_days: int = 7, confidence_
     print(f"Overall Out-of-Time Mean Recall    : {df_res['recall'].mean():.2%}")
     print(f"Overall Mean Expectancy R           : {df_res['expectancy_r'].mean():+.2f}R")
     print("=" * 80 + "\n")
+    return sorted_trades
 
 
 if __name__ == "__main__":

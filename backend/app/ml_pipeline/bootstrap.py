@@ -828,7 +828,7 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
                 r_multiple=float(r_multiple),
                 label=label,
                 holding_time_minutes=holding_minutes,
-                exit_reason="bootstrap_historical",
+                exit_reason="bootstrap_reconstructed",
                 is_paper_trade=True,
                 is_bootstrap=True,
                 model_version="v0",
@@ -868,22 +868,29 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
         liquidity = max(0.0, position.entry_snapshot.liquidity_usd)
         volume_ratio = position.entry_snapshot.volume_24h / liquidity if liquidity > 0 else 0.0
 
-        # Cluster score: 1.0 if multiple wallets bought this same token within 5 minutes window, 0.0 otherwise
-        cluster_score = 0.0
-        if all_positions:
-            same_token_trades = [
-                p for p in all_positions
-                if p.token_mint == position.token_mint and p.wallet_address != position.wallet_address
-                and abs((p.entry_ts - position.entry_ts).total_seconds()) <= 300
-            ]
-            if same_token_trades:
-                cluster_score = 1.0
+        # Cluster score: compute using shared domain pure function
+        from app.domain.cluster_logic import compute_cluster_score
+        cluster_score = compute_cluster_score(
+            target_wallet=position.wallet_address,
+            target_token=position.token_mint,
+            target_timestamp=position.entry_ts,
+            events=all_positions or [],
+            window_minutes=settings.TRIGGER_WINDOW_MINUTES
+        )
+
+        # Historical RPC swap data does not contain pre-quote price.
+        # Fallback to default 0.01 for historical bootstrap reconstruction with explicit warning log.
+        logger.warning(
+            f"[SLIPPAGE] Historical RPC swap data for token {position.token_mint[:8]}... does not contain pre-quote price. "
+            f"Falling back to default slippage_actual 0.01 (1%)."
+        )
+        slippage_actual = 0.01
 
         return {
             "position_size_usd": float(entry_value),
             "token_age_minutes": float(token_age_minutes),
             "liquidity_pool_depth": float(liquidity),
-            "slippage_actual": 0.01,
+            "slippage_actual": float(slippage_actual),
             "cluster_score": float(cluster_score),
             "win_rate_30d": float(max(0.0, min(win_rate, 1.0))),
             "avg_holding_time_minutes": float(avg_hold),

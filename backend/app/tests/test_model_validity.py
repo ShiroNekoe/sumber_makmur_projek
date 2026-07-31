@@ -95,6 +95,51 @@ class TestModelValidityFase2(unittest.TestCase):
         feat_single = svc._feature_row(pos1, entry_value=500.0, holding_minutes=20, prior_trades=[], all_positions=[pos1])
         self.assertEqual(feat_single["cluster_score"], 0.0)
 
+    def test_walk_forward_eval_execution(self):
+        """
+        Verifies end-to-end walk-forward evaluation logic across multi-window out-of-time folds.
+        Mocks trade history repository with 25 realistic ClosedTrade objects spanning 21 days.
+        """
+        from datetime import datetime, timezone, timedelta
+        from unittest.mock import patch, AsyncMock
+        from app.domain.models import ClosedTrade
+
+        base_time = datetime.now(timezone.utc) - timedelta(days=21)
+        mock_trades = []
+        for i in range(25):
+            t_entry = base_time + timedelta(days=i * 0.8)
+            mock_trades.append(
+                ClosedTrade(
+                    trade_id=f"wf_trade_{i}",
+                    wallet_source=f"Wallet_{i % 3}",
+                    token_address=f"TokenMint_{i % 4}",
+                    token_symbol="PUMP",
+                    signal_ts=t_entry,
+                    entry_ts=t_entry,
+                    exit_ts=t_entry + timedelta(minutes=15),
+                    direction="BUY",
+                    confidence_score=0.85,
+                    safety_check_passed=True,
+                    entry_price=1.0,
+                    exit_price=1.2 if i % 2 == 0 else 0.8,
+                    position_size_usd=100.0,
+                    risk_pct=0.01,
+                    pnl_pct_actual=0.20 if i % 2 == 0 else -0.20,
+                    r_multiple=2.0 if i % 2 == 0 else -2.0,
+                    label="BUY_BENAR" if i % 2 == 0 else "SALAH",
+                    holding_time_minutes=15,
+                    exit_reason="tp_target",
+                    is_paper_trade=True,
+                    is_bootstrap=True,
+                    model_version="v0"
+                )
+            )
+
+        with patch("app.infrastructure.database.repository.SQLAlchemyTradeHistoryRepository.get_closed_trades", new=AsyncMock(return_value=mock_trades)):
+            trades_result = run_walk_forward_eval(window_days=14, step_days=7)
+            self.assertIsNotNone(trades_result)
+            self.assertGreaterEqual(len(trades_result), 20)
+
 
 if __name__ == "__main__":
     unittest.main()

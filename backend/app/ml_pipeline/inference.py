@@ -63,17 +63,32 @@ class FeatureExtractor(IFeatureExtractor):
 
         # 2. Extract On-chain Features
         position_size_usd = float(trigger_event.get("amount_usd", 0.0))
-        
         token_age_raw = float(token_info.get("age_minutes", 60.0))
-        token_age_minutes = max(0.0, token_age_raw) # Validation: cannot be negative
-        
+        token_age_minutes = max(0.0, token_age_raw)
         liquidity_pool_depth = float(token_info.get("liquidity_usd", 5000.0))
-        slippage_actual = trigger_event.get("slippage_actual") or 0.01  # 1% fallback
-        
-        # Cluster score: 1.0 if AND boost is active, 0.0 otherwise
-        cluster_score = 1.0 if trigger_event.get("confidence_boost") else 0.0
 
-        # 3. Query Historical DB Features (SQLite)
+        if trigger_event.get("slippage_actual") is not None:
+            slippage_actual = float(trigger_event["slippage_actual"])
+        else:
+            logger.warning(
+                f"[SLIPPAGE] Actual execution slippage not available in trigger event for token {token_address[:8]}... "
+                f"Falling back to default slippage_actual 0.01 (1%)."
+            )
+            slippage_actual = 0.01
+
+        # Cluster score: compute using shared domain pure function
+        from app.domain.cluster_logic import compute_cluster_score
+        from app.use_cases.dashboard_query import get_all_signal_events
+        recent_events = get_all_signal_events()
+        cluster_score = compute_cluster_score(
+            target_wallet=wallet_source,
+            target_token=token_address,
+            target_timestamp=timestamp,
+            events=recent_events,
+            window_minutes=settings.TRIGGER_WINDOW_MINUTES,
+            confidence_boost=bool(trigger_event.get("confidence_boost"))
+        )
+
         win_rate_30d = self.prior_win_rate
         avg_holding_time = self.prior_holding_time_minutes
         typical_trade_size = self.prior_trade_size_usd
@@ -114,7 +129,6 @@ class FeatureExtractor(IFeatureExtractor):
             logger.error(f"[FEATURE EXTRACTOR] Error querying SQLite historical trades: {e}", exc_info=True)
 
         # 4. Extract Market Context Features
-        # SOL/USD momentum placeholder (in production, connected to price feed)
         sol_usd_momentum = 0.0
         
         # Token volume/liquidity ratio (24h volume / pool depth)
@@ -149,7 +163,7 @@ class FeatureExtractor(IFeatureExtractor):
 
 class XGBoostInferenceEngine(IXGBoostInferenceEngine):
     """
-    Layer 2 Use Case: XGBoost Inference Engine (F-05)
+    Layer 3 Use Case: Inference Pipeline (F-11)
     Loads active model or bootstraps Model v0, and runs multi-class classification.
     Uses core XGBoost APIs to avoid scikit-learn dependency.
     """

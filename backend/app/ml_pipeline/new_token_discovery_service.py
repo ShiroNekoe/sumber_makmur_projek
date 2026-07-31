@@ -408,8 +408,22 @@ class NewTokenDiscoveryService:
             token_age_minutes = max(0.0, (now - snapshot.pair_created_at).total_seconds() / 60.0)
 
         liquidity_pool_depth = max(0.0, snapshot.liquidity_usd)
+        logger.warning(
+            f"[SLIPPAGE] Actual execution slippage not available in discovery phase for token {token_mint[:8]}... "
+            f"Falling back to default slippage_actual 0.01 (1%)."
+        )
         slippage_actual = 0.01
-        cluster_score = 1.0
+
+        from app.domain.cluster_logic import compute_cluster_score
+        from app.use_cases.dashboard_query import get_all_signal_events
+        recent_events = get_all_signal_events()
+        cluster_score = compute_cluster_score(
+            target_wallet="DISCOVERY_ENGINE",
+            target_token=token_mint,
+            target_timestamp=now,
+            events=recent_events,
+            window_minutes=settings.TRIGGER_WINDOW_MINUTES
+        )
 
         # 2. Query historical wallet trade stats over rolling 30-day window
         win_rate_30d = 0.45
