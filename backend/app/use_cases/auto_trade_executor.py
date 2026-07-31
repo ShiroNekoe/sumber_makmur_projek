@@ -283,6 +283,25 @@ class AutoTradeExecutor:
                         resolution_status="failed"
                     )
                     return None
+
+                # Calculate real live slippage (quoted price before order vs effective execution price post-order)
+                live_slippage = None
+                if self.token_info_service and entry_price and entry_price > 0:
+                    try:
+                        post_token_info = await self.token_info_service.get_token_info(token_address)
+                        if post_token_info and post_token_info.get("price_usd"):
+                            executed_price = float(post_token_info["price_usd"])
+                            live_slippage = abs(executed_price - entry_price) / entry_price
+                            logger.info(
+                                f"[LIVE SLIPPAGE] Entry swap executed for {token_address[:8]}... "
+                                f"Quoted: ${entry_price:.6f}, Executed: ${executed_price:.6f}, "
+                                f"Real Slippage: {live_slippage:.4%}"
+                            )
+                    except Exception as slip_err:
+                        logger.warning(f"[LIVE SLIPPAGE] Failed to query post-swap token price for slippage: {slip_err}")
+
+                if live_slippage is None:
+                    live_slippage = getattr(feature_vector, "slippage_actual", None) or 0.01
                     
                 # 4. Save state to SQLite (state = OPEN)
                 position_id = f"pos_{uuid.uuid4().hex[:8]}"
@@ -303,7 +322,8 @@ class AutoTradeExecutor:
                     trailing_level=None,
                     peak_r_multiple=0.0,
                     confidence_score=prediction.confidence_score,
-                    model_version=model_ver
+                    model_version=model_ver,
+                    slippage_actual=live_slippage
                 )
                 
                 await self.position_repo.add_position(open_pos)

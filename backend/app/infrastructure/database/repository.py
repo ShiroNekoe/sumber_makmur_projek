@@ -177,7 +177,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             trailing_level=orm.trailing_level,
             peak_r_multiple=orm.peak_r_multiple,
             confidence_score=orm.confidence_score,
-            model_version=orm.model_version
+            model_version=orm.model_version,
+            slippage_actual=getattr(orm, "slippage_actual", None)
         )
 
     @db_locked
@@ -207,7 +208,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             trailing_level=position.trailing_level,
             peak_r_multiple=position.peak_r_multiple,
             confidence_score=position.confidence_score,
-            model_version=position.model_version
+            model_version=position.model_version,
+            slippage_actual=position.slippage_actual
         )
         self.db.add(orm)
         self.db.commit()
@@ -228,6 +230,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             orm.peak_r_multiple = position.peak_r_multiple
             orm.confidence_score = position.confidence_score
             orm.model_version = position.model_version
+            if hasattr(orm, "slippage_actual"):
+                orm.slippage_actual = position.slippage_actual
             self.db.commit()
 
     @retry_on_db_locked()
@@ -266,7 +270,8 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
             exit_reason=orm.exit_reason,
             is_paper_trade=orm.is_paper_trade,
             is_bootstrap=orm.is_bootstrap or False,
-            model_version=orm.model_version
+            model_version=orm.model_version,
+            slippage_actual=getattr(orm, "slippage_actual", None)
         )
 
     @db_locked
@@ -308,8 +313,9 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
             holding_time_minutes=trade.holding_time_minutes,
             exit_reason=trade.exit_reason,
             is_paper_trade=trade.is_paper_trade,
-            is_bootstrap=trade.is_bootstrap,
-            model_version=trade.model_version
+            is_bootstrap=trade.is_bootstrap or False,
+            model_version=trade.model_version,
+            slippage_actual=trade.slippage_actual
         )
         self.db.add(orm)
         self.db.commit()

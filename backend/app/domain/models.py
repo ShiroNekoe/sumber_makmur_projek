@@ -27,6 +27,7 @@ class OpenPosition(BaseModel):
     peak_r_multiple: float = 0.0
     confidence_score: float
     model_version: str
+    slippage_actual: Optional[float] = None
 
     model_config = {
         "protected_namespaces": ()
@@ -56,6 +57,7 @@ class ClosedTrade(BaseModel):
     is_paper_trade: bool
     is_bootstrap: bool = False
     model_version: str
+    slippage_actual: Optional[float] = None
 
     model_config = {
         "protected_namespaces": ()

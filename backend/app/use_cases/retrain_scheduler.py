@@ -164,6 +164,7 @@ class RetrainScheduler:
                 "hour_of_day_utc": []
             }
             
+            from app.domain.cluster_logic import compute_cluster_score
             for t in filtered_trades:
                 # Re-calculate/assign labels based on R-multiple
                 if t.r_multiple >= settings.LABELING_BUY_BENAR_THRESHOLD_R:
@@ -173,22 +174,52 @@ class RetrainScheduler:
                 else:
                     labels.append(0) # HOLD
                     
-                # Reconstruct feature vector
-                h = _deterministic_hash(t.token_address)
-                feature_data["position_size_usd"].append(t.position_size_usd)
-                feature_data["token_age_minutes"].append(float((h % 1400) + 10))
-                feature_data["liquidity_pool_depth"].append(float((h % 90000) + 5000))
-                feature_data["slippage_actual"].append(0.005 + (h % 15) * 0.001)
-                feature_data["cluster_score"].append(1.0 if (h % 2 == 0) else 0.0)
-                feature_data["win_rate_30d"].append(t.confidence_score) # proxy win rate
-                feature_data["avg_holding_time_minutes"].append(float(t.holding_time_minutes))
-                feature_data["typical_trade_size_usd"].append(t.position_size_usd)
-                feature_data["past_exit_pattern_score"].append(0.1 if t.exit_reason.startswith("kill_switch") else 0.0)
-                feature_data["sol_usd_momentum"].append(0.02 if t.label == "BUY_BENAR" else -0.01)
-                feature_data["token_volume_liquidity_ratio"].append(0.12 if t.label == "BUY_BENAR" else 0.05)
+                # Reconstruct REAL feature vector from trade attributes and rolling wallet stats
+                entry_ts = t.entry_ts.replace(tzinfo=timezone.utc) if t.entry_ts.tzinfo is None else t.entry_ts
                 
-                signal_ts = t.signal_ts.replace(tzinfo=timezone.utc) if t.signal_ts.tzinfo is None else t.signal_ts
-                feature_data["hour_of_day_utc"].append(signal_ts.hour)
+                # Rolling 30-day prior trades for this wallet
+                prior_trades = [
+                    pt for pt in filtered_trades
+                    if pt.wallet_source == t.wallet_source
+                    and pt.trade_id != t.trade_id
+                    and 0 < (entry_ts - (pt.entry_ts.replace(tzinfo=timezone.utc) if pt.entry_ts.tzinfo is None else pt.entry_ts)).total_seconds() <= 30 * 86400
+                ]
+                
+                if prior_trades:
+                    win_count = sum(1 for pt in prior_trades if pt.label == "BUY_BENAR")
+                    win_rate_30d = float(win_count) / len(prior_trades)
+                    avg_holding = float(sum(pt.holding_time_minutes for pt in prior_trades)) / len(prior_trades)
+                    typical_size = float(sum(pt.position_size_usd for pt in prior_trades)) / len(prior_trades)
+                    exit_pattern = float(sum(1 for pt in prior_trades if pt.exit_reason and pt.exit_reason.startswith("kill_switch"))) / len(prior_trades)
+                else:
+                    win_rate_30d = 0.45
+                    avg_holding = 20.0
+                    typical_size = float(t.position_size_usd or 500.0)
+                    exit_pattern = 0.0
+
+                cluster_score = compute_cluster_score(
+                    target_wallet=t.wallet_source,
+                    target_token=t.token_address,
+                    target_timestamp=entry_ts,
+                    events=filtered_trades,
+                    window_minutes=settings.TRIGGER_WINDOW_MINUTES
+                )
+
+                # Real slippage if recorded from live execution, else 0.01 structural limit
+                slippage_val = float(getattr(t, "slippage_actual", None) or 0.01)
+
+                feature_data["position_size_usd"].append(float(t.position_size_usd or 500.0))
+                feature_data["token_age_minutes"].append(60.0)
+                feature_data["liquidity_pool_depth"].append(5000.0)
+                feature_data["slippage_actual"].append(slippage_val)
+                feature_data["cluster_score"].append(float(cluster_score))
+                feature_data["win_rate_30d"].append(float(max(0.0, min(win_rate_30d, 1.0))))
+                feature_data["avg_holding_time_minutes"].append(float(avg_holding))
+                feature_data["typical_trade_size_usd"].append(float(typical_size))
+                feature_data["past_exit_pattern_score"].append(float(exit_pattern))
+                feature_data["sol_usd_momentum"].append(0.0)
+                feature_data["token_volume_liquidity_ratio"].append(0.0)
+                feature_data["hour_of_day_utc"].append(float(entry_ts.hour))
                 
             df_X = pd.DataFrame(feature_data)
             df_y = np.array(labels)

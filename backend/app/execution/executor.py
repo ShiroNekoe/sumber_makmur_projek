@@ -468,7 +468,8 @@ class ParallelExecutionEngine:
                     exit_reason=reason,
                     is_paper_trade=not (keypair is not None),
                     is_bootstrap=False,
-                    model_version=self.position.model_version
+                    model_version=self.position.model_version,
+                    slippage_actual=self.position.slippage_actual
                 )
                 
                 if self.trade_history_repo:

@@ -43,6 +43,7 @@ class OpenPositionORM(Base):
     peak_r_multiple = Column(Float, default=0.0, nullable=False)
     confidence_score = Column(Float, nullable=False)
     model_version = Column(String, ForeignKey("model_registry.model_version"), nullable=False)
+    slippage_actual = Column(Float, nullable=True)
 
     wallet = relationship("WatchlistWalletORM")
     model = relationship("ModelRegistryORM")
@@ -73,6 +74,7 @@ class ClosedTradeORM(Base):
     is_paper_trade = Column(Boolean, nullable=False)
     is_bootstrap = Column(Boolean, default=False, nullable=True)
     model_version = Column(String, ForeignKey("model_registry.model_version"), nullable=False)
+    slippage_actual = Column(Float, nullable=True)
 
     wallet = relationship("WatchlistWalletORM")
     model = relationship("ModelRegistryORM")
