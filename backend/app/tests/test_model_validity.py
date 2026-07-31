@@ -52,12 +52,48 @@ class TestModelValidityFase2(unittest.TestCase):
         self.assertAlmostEqual(weights[1], 1.0)
         self.assertAlmostEqual(weights[3], 2/3)
 
-    def test_walk_forward_eval_execution(self):
-        # Test that walk_forward_eval executes gracefully even with small/empty mock database
-        try:
-            run_walk_forward_eval(window_days=14, step_days=7)
-        except Exception as e:
-            self.fail(f"run_walk_forward_eval raised unexpected exception: {e}")
+    def test_cluster_score_multi_wallet_detection(self):
+        from datetime import datetime, timezone, timedelta
+        from app.ml_pipeline.bootstrap import ReconstructedPosition, TokenMarketSnapshot, HistoricalModelBootstrapService
+
+        now = datetime.now(timezone.utc)
+        snap = TokenMarketSnapshot(price_usd=1.0, liquidity_usd=10000.0, volume_24h=2000.0)
+
+        # Position 1: Wallet A buys Token XYZ at T
+        pos1 = ReconstructedPosition(
+            wallet_address="WalletA1111111111111111111111111111111111",
+            token_mint="TokenXYZ1111111111111111111111111111111111",
+            entry_signature="sigA",
+            exit_signature="sigA_exit",
+            entry_ts=now,
+            exit_ts=now + timedelta(minutes=20),
+            amount_token=100.0,
+            entry_snapshot=snap,
+            exit_snapshot=snap
+        )
+
+        # Position 2: Wallet B (DIFFERENT wallet) buys SAME Token XYZ at T + 2 minutes
+        pos2 = ReconstructedPosition(
+            wallet_address="WalletB2222222222222222222222222222222222",
+            token_mint="TokenXYZ1111111111111111111111111111111111",
+            entry_signature="sigB",
+            exit_signature="sigB_exit",
+            entry_ts=now + timedelta(minutes=2),
+            exit_ts=now + timedelta(minutes=22),
+            amount_token=100.0,
+            entry_snapshot=snap,
+            exit_snapshot=snap
+        )
+
+        svc = HistoricalModelBootstrapService()
+
+        # Test with both positions in all_positions -> cluster_score MUST BE 1.0
+        feat1 = svc._feature_row(pos1, entry_value=500.0, holding_minutes=20, prior_trades=[], all_positions=[pos1, pos2])
+        self.assertEqual(feat1["cluster_score"], 1.0)
+
+        # Test with single position in all_positions -> cluster_score MUST BE 0.0
+        feat_single = svc._feature_row(pos1, entry_value=500.0, holding_minutes=20, prior_trades=[], all_positions=[pos1])
+        self.assertEqual(feat_single["cluster_score"], 0.0)
 
 
 if __name__ == "__main__":

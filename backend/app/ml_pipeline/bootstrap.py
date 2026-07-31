@@ -806,7 +806,7 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
             label, label_idx = self._label_from_r_multiple(r_multiple)
             holding_minutes = max(1, int((position.exit_ts - position.entry_ts).total_seconds() / 60.0))
             prior_trades = wallet_stats.get(position.wallet_address, [])
-            feature_rows.append(self._feature_row(position, entry_value, holding_minutes, prior_trades))
+            feature_rows.append(self._feature_row(position, entry_value, holding_minutes, prior_trades, all_positions=positions))
             labels.append(label_idx)
 
             trade = ClosedTrade(
@@ -828,7 +828,7 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
                 r_multiple=float(r_multiple),
                 label=label,
                 holding_time_minutes=holding_minutes,
-                exit_reason="bootstrap_reconstructed",
+                exit_reason="bootstrap_historical",
                 is_paper_trade=True,
                 is_bootstrap=True,
                 model_version="v0",
@@ -847,6 +847,7 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
         entry_value: float,
         holding_minutes: int,
         prior_trades: List[ClosedTrade],
+        all_positions: Optional[List[ReconstructedPosition]] = None,
     ) -> Dict[str, float]:
         if prior_trades:
             win_rate = sum(1 for t in prior_trades if t.label == "BUY_BENAR") / len(prior_trades)
@@ -869,13 +870,14 @@ class HistoricalModelBootstrapService(IModelBootstrapService):
 
         # Cluster score: 1.0 if multiple wallets bought this same token within 5 minutes window, 0.0 otherwise
         cluster_score = 0.0
-        same_token_trades = [
-            p for p in prior_trades
-            if getattr(p, "token_mint", "") == position.token_mint and getattr(p, "wallet_address", None) != position.wallet_address
-            and abs((p.entry_ts - position.entry_ts).total_seconds()) <= 300
-        ]
-        if same_token_trades:
-            cluster_score = 1.0
+        if all_positions:
+            same_token_trades = [
+                p for p in all_positions
+                if p.token_mint == position.token_mint and p.wallet_address != position.wallet_address
+                and abs((p.entry_ts - position.entry_ts).total_seconds()) <= 300
+            ]
+            if same_token_trades:
+                cluster_score = 1.0
 
         return {
             "position_size_usd": float(entry_value),

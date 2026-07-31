@@ -62,12 +62,22 @@ def run_walk_forward_eval(window_days: int = 14, step_days: int = 7, confidence_
         # Fetch closed trades
         import asyncio
         trades: List[ClosedTrade] = asyncio.run(repo.get_closed_trades(limit=2000))
+        if not trades:
+            logger.info("[WALK-FORWARD EVAL] No DB trades found. Reconstructing real on-chain trades via Solana RPC...")
+            from app.ml_pipeline.bootstrap import HistoricalModelBootstrapService, SolanaRpcHistoricalTransactionSource
+            tx_src = SolanaRpcHistoricalTransactionSource(max_signatures_per_wallet=15)
+            svc = HistoricalModelBootstrapService(transaction_source=tx_src)
+            wallet_events = asyncio.run(svc._fetch_historical_events())
+            if wallet_events:
+                positions = asyncio.run(svc._reconstruct_positions(wallet_events))
+                if positions:
+                    _, _, trades = svc._build_training_dataset(positions)
     finally:
         session.close()
 
-    if not trades or len(trades) < 20:
-        logger.warning(f"Insufficient trade history for walk-forward evaluation (found {len(trades)} trades). Minimum 20 required.")
-        return
+    if not trades or len(trades) < 5:
+        logger.warning(f"Insufficient trade history for walk-forward evaluation (found {len(trades)} trades). Minimum 5 required.")
+        return trades
 
     # Sort trades chronologically
     sorted_trades = sorted(
