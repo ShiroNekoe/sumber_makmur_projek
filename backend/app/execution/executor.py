@@ -231,16 +231,16 @@ class ParallelExecutionEngine:
         except Exception as e:
             logger.error(f"[PROTECTION] Error in kill-switch loop: {e}", exc_info=True)
 
-    async def _check_onchain_kill_signals(self) -> Optional[str]:
+    async def _check_onchain_kill_signals(self, signer_address: Optional[str] = None) -> Optional[str]:
         """
         Evaluates emergency on-chain signals for this open position:
-        1. LP Removal / Liquidity Drop
-        2. Dev Wallet Sell / Holder Concentration Shift
-        3. On-chain Bonding Curve Slippage / Price Impact Spike
+        1. On-Chain Slippage / Price Impact Spike & Wallet-Agnostic Large Sell
+        2. Dev Wallet Sell Fast-Path
+        3. LP Removal / Liquidity Drop
         """
         token_address = self.position.token_address
 
-        # 1. On-Chain Slippage / Price Impact Spike Detection
+        # 1. On-Chain Slippage / Price Impact Spike Detection (Wallet-Agnostic)
         try:
             from app.infrastructure.blockchain.bonding_curve_price import estimate_bonding_curve_price_impact
             sol_price_usd = getattr(settings, "SOL_USD_FALLBACK", 145.0)
@@ -252,12 +252,16 @@ class ParallelExecutionEngine:
                     self._baseline_price_impact = current_impact
                 else:
                     impact_spike = current_impact - self._baseline_price_impact
-                    if impact_spike >= getattr(settings, "KILL_SWITCH_SLIPPAGE_SPIKE_THRESHOLD_PCT", 0.15):
+                    threshold = getattr(settings, "KILL_SWITCH_SLIPPAGE_SPIKE_THRESHOLD_PCT", 0.15)
+                    if impact_spike >= threshold:
                         logger.warning(
                             f"[PROTECTION] [L3] On-chain price impact spiked +{impact_spike:.1%} "
                             f"({self._baseline_price_impact:.1%} -> {current_impact:.1%}) for {token_address[:8]}..."
                         )
-                        return "kill_switch_slippage_spike"
+                        dev_address = getattr(self.position, "wallet_source", None)
+                        if signer_address and dev_address and signer_address.lower() == dev_address.lower():
+                            return "kill_switch_dev_dump"
+                        return "kill_switch_large_sell"
         except Exception as err:
             logger.debug(f"[PROTECTION] [L3] Slippage spike check skipped: {err}")
 
@@ -294,6 +298,36 @@ class ParallelExecutionEngine:
                         f"({self._baseline_top_10_holders_share:.1%} -> {top_10_share:.1%}) for {token_address}"
                     )
                     return "kill_switch_dev_dump"
+
+        return None
+
+    def evaluate_reserve_change(
+        self,
+        new_v_sol: int,
+        new_v_token: int,
+        signer_address: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Wallet-agnostic evaluation of reserve state push notification.
+        Returns:
+          - 'kill_switch_dev_dump' if signer matches dev wallet and sell exceeds threshold
+          - 'kill_switch_large_sell' if wallet-agnostic sell exceeds threshold
+          - None if change is below threshold
+        """
+        if not hasattr(self, "_baseline_v_sol") or self._baseline_v_sol is None:
+            self._baseline_v_sol = new_v_sol
+            self._baseline_v_token = new_v_token
+            return None
+
+        threshold = getattr(settings, "KILL_SWITCH_SLIPPAGE_SPIKE_THRESHOLD_PCT", 0.15)
+        # Drop in SOL reserves indicates tokens sold back to bonding curve
+        if self._baseline_v_sol > 0:
+            sol_reserve_drop_pct = (self._baseline_v_sol - new_v_sol) / self._baseline_v_sol
+            if sol_reserve_drop_pct >= threshold:
+                dev_address = getattr(self.position, "wallet_source", None)
+                if signer_address and dev_address and signer_address.lower() == dev_address.lower():
+                    return "kill_switch_dev_dump"
+                return "kill_switch_large_sell"
 
         return None
 

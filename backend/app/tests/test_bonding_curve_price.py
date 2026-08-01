@@ -19,16 +19,16 @@ class TestBondingCurvePrice(unittest.TestCase):
         self.assertIsInstance(pda, Pubkey)
 
     def test_struct_unpacking(self):
-        # Build 49-byte dummy struct payload
+        # Build 49-byte dummy struct payload (v_token first, then v_sol)
         discriminator = b"\x00" * 8
-        v_sol = 30_000_000_000      # 30.0 SOL in lamports
         v_token = 1_000_000_000_000 # 1,000,000 tokens (with 6 decimals)
-        r_sol = 10_000_000_000
+        v_sol = 30_000_000_000      # 30.0 SOL in lamports
         r_token = 800_000_000_000
+        r_sol = 10_000_000_000
         supply = 1_000_000_000_000
         complete = 0 # False
 
-        payload = discriminator + struct.pack("<QQQQQB", v_sol, v_token, r_sol, r_token, supply, complete)
+        payload = discriminator + struct.pack("<QQQQQB", v_token, v_sol, r_token, r_sol, supply, complete)
         self.assertEqual(len(payload), 49)
 
         parsed = parse_bonding_curve_account_data(payload)
@@ -36,6 +36,38 @@ class TestBondingCurvePrice(unittest.TestCase):
         self.assertEqual(parsed["virtualSolReserves"], v_sol)
         self.assertEqual(parsed["virtualTokenReserves"], v_token)
         self.assertFalse(parsed["complete"])
+
+    def test_pump_fun_official_readme_fixture(self):
+        """
+        Regression test using official account fixture from pump.fun documentation (PUMP_PROGRAM_README.md):
+        Reference: https://github.com/pump-fun/pump-public-docs/blob/main/PUMP_PROGRAM_README.md
+        v_token_reserves = 1072999999992855 (1,072,999,999.992855 tokens)
+        v_sol_reserves   = 30000000013 (30.000000013 SOL)
+        Expected Price in SOL = 30.000000013 / 1072999999.992855 = 0.0000000279589932... SOL
+        For SOL = $150 USD -> Expected Price in USD = $0.00000419384899... USD (~$0.00000419 USD)
+        """
+        discriminator = b"\x00" * 8
+        v_token = 1_072_999_999_992_855
+        v_sol = 30_000_000_013
+        r_token = 793_000_000_000_000
+        r_sol = 10_000_000_013
+        supply = 1_000_000_000_000_000
+        complete = 0
+
+        payload = discriminator + struct.pack("<QQQQQB", v_token, v_sol, r_token, r_sol, supply, complete)
+        parsed = parse_bonding_curve_account_data(payload)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["virtualTokenReserves"], v_token)
+        self.assertEqual(parsed["virtualSolReserves"], v_sol)
+
+        sol_reserves = parsed["virtualSolReserves"] / 1e9
+        token_reserves = parsed["virtualTokenReserves"] / 1e6
+        price_sol = sol_reserves / token_reserves
+        price_usd = price_sol * 150.0
+
+        # Assert correct order of magnitude ($0.00000419 USD, NOT $5,365 USD!)
+        self.assertAlmostEqual(price_usd, 0.00000419384899, places=8)
 
     @patch("app.infrastructure.blockchain.bonding_curve_price.fetch_bonding_curve_account_info", new_callable=AsyncMock)
     def test_get_bonding_curve_price(self, mock_fetch):

@@ -35,12 +35,12 @@ def get_bonding_curve_pda(token_mint_str: str) -> Optional[Pubkey]:
 def parse_bonding_curve_account_data(raw_data_bytes: bytes) -> Optional[Dict[str, Any]]:
     """
     Parses binary struct of a pump.fun bonding curve account.
-    Layout:
+    Layout (from pump.fun official docs / PUMP_PROGRAM_README.md):
       - 8 bytes: Account discriminator
-      - uint64: virtualSolReserves
       - uint64: virtualTokenReserves
-      - uint64: realSolReserves
+      - uint64: virtualSolReserves
       - uint64: realTokenReserves
+      - uint64: realSolReserves
       - uint64: tokenTotalSupply
       - uint8: complete (bool)
     """
@@ -50,7 +50,7 @@ def parse_bonding_curve_account_data(raw_data_bytes: bytes) -> Optional[Dict[str
 
     try:
         # Unpack 5 uint64s and 1 uint8 following 8-byte discriminator
-        v_sol, v_token, r_sol, r_token, supply, complete_byte = struct.unpack(
+        v_token, v_sol, r_token, r_sol, supply, complete_byte = struct.unpack(
             "<QQQQQB", raw_data_bytes[8:49]
         )
 
