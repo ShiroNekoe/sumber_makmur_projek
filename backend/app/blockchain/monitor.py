@@ -368,7 +368,12 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
             self.sub_id_to_pda.pop(sub_id, None)
 
     async def subscribe_account(self, pda_address: str, callback: Callable):
-        """Public API: Subscribe callback function to account PDA updates."""
+        """Public API: Subscribe callback function to account PDA updates.
+
+        If the monitor has not been started yet (self.websocket is None and not self.is_running),
+        the callback is queued and will be automatically subscribed on the next connect cycle.
+        A loud warning is emitted so that lifecycle wiring gaps are always visible in logs.
+        """
         if pda_address not in self.account_callbacks:
             self.account_callbacks[pda_address] = set()
         self.account_callbacks[pda_address].add(callback)
@@ -376,6 +381,18 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         if self.websocket:
             async with self._ws_lock:
                 await self._subscribe_to_account(self.websocket, pda_address)
+        elif not self.is_running:
+            # FAIL LOUD: monitor not started — callback is queued but subscribe won't fire until
+            # monitor.start() is called. This should never happen in production if main.py lifecycle
+            # is wired correctly. Log at WARNING so this is immediately visible.
+            logger.warning(
+                "[WS MONITOR] subscribe_account called but monitor not yet started "
+                f"(is_running=False, websocket=None). Callback for PDA {pda_address[:8]}... "
+                "is queued and will subscribe on next connect. "
+                "Verify that get_ws_monitor().start() is called before any position monitoring begins."
+            )
+        # If is_running=True but websocket=None: we are between reconnect cycles.
+        # The _run_monitor_loop resubscription pass will pick up account_callbacks automatically.
 
     async def unsubscribe_account(self, pda_address: str, callback: Optional[Callable] = None):
         """Public API: Unsubscribe callback function from account PDA updates."""
@@ -707,6 +724,25 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
             for sig in expired:
                 self.signature_dedup_window.pop(sig, None)
 
+    def get_health_check(self) -> dict:
+        """Return a diagnostic snapshot of the monitor's subscription state.
+
+        Useful for detecting gaps where a callback is registered (in account_callbacks)
+        but no confirmed sub_id exists yet (in pda_sub_ids) — which would indicate either
+        a lifecycle wiring problem or a pending reconnect resubscription.
+        """
+        registered_pdas = list(self.account_callbacks.keys())
+        confirmed_pdas = list(self.pda_sub_ids.keys())
+        unconfirmed = [p for p in registered_pdas if p not in confirmed_pdas]
+        return {
+            "is_running": self.is_running,
+            "websocket_active": self.websocket is not None,
+            "registered_pda_count": len(registered_pdas),
+            "confirmed_sub_count": len(confirmed_pdas),
+            "unconfirmed_pdas": unconfirmed,
+            "active_wallets_count": len(self.active_wallets),
+        }
+
 
 class SolanaMonitorSimulator(IWalletMovementMonitor):
     """
@@ -779,6 +815,16 @@ _global_ws_monitor: Optional[SolanaWebSocketMonitor] = None
 
 
 def get_ws_monitor() -> SolanaWebSocketMonitor:
+    """Return the application-level singleton SolanaWebSocketMonitor instance.
+
+    This singleton is the single source of truth for both:
+    - wallet logsSubscribe events (via MonitorWalletsUseCase in main.py lifespan)
+    - PDA accountSubscribe events (via _run_pda_subscription_loop in executor.py)
+
+    IMPORTANT: This function returns the instance but does NOT start it.
+    The instance is started by main.py lifespan via MonitorWalletsUseCase.initialize_and_start(),
+    which calls monitor.start() internally. Never call .start() here.
+    """
     global _global_ws_monitor
     if _global_ws_monitor is None:
         _global_ws_monitor = SolanaWebSocketMonitor()

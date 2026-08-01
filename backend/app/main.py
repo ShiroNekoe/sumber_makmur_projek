@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
         SQLAlchemyModelRegistryRepository,
         SQLAlchemyPositionRepository
     )
-    from app.blockchain.monitor import SolanaWebSocketMonitor
+    from app.blockchain.monitor import SolanaWebSocketMonitor, get_ws_monitor
     from app.infrastructure.blockchain.token_service import SolanaTokenInfoService, SolanaTokenSafetyService
     from app.use_cases.safety_check_gate import SafetyCheckGate
     from app.use_cases.trigger_engine import TriggerEngine
@@ -298,11 +298,18 @@ async def lifespan(app: FastAPI):
             monitor = SolanaMonitorSimulator(wallets=wallet_addresses)
             logger.warning("[STARTUP] SIMULATION_MODE active. Running Solana Monitor Simulator instead of live WebSocket client.")
         else:
-            monitor = SolanaWebSocketMonitor()
-            
+            # Opsi A: pakai get_ws_monitor() singleton sebagai satu-satunya instance di seluruh aplikasi.
+            # Ini memastikan MonitorWalletsUseCase (wallet-logs) dan _run_pda_subscription_loop() (PDA
+            # accountSubscribe) berbagi satu koneksi WebSocket tersentralisasi — singleton tidak perlu
+            # di-start terpisah karena initialize_and_start() memanggil monitor.start() di bawah.
+            monitor = get_ws_monitor()
+            logger.info("[STARTUP] Using centralized get_ws_monitor() singleton for wallet-logs + PDA subscription.")
+
         monitor_use_case = MonitorWalletsUseCase(wallet_repo, monitor, relevance_filter)
-        await monitor_use_case.initialize_and_start()
+        await monitor_use_case.initialize_and_start()  # calls monitor.start() internally
+        app.state.ws_monitor = monitor  # expose for explicit shutdown
         app.state.monitor_use_case = monitor_use_case
+        logger.info("[STARTUP] SolanaWebSocketMonitor singleton started and registered in app.state.")
 
         # Initialize Portfolio & PnL Services
         from app.use_cases.portfolio_service import PortfolioService
@@ -448,6 +455,14 @@ async def lifespan(app: FastAPI):
             await app.state.monitor_use_case.stop()
         except Exception as e:
             logger.error(f"Error stopping monitor: {e}")
+
+    # Explicit cleanup for ws_monitor singleton (covers PDA subscriptions from executor)
+    if hasattr(app.state, "ws_monitor"):
+        try:
+            await app.state.ws_monitor.stop()
+            logger.info("[SHUTDOWN] get_ws_monitor() singleton stopped cleanly.")
+        except Exception as e:
+            logger.error(f"[SHUTDOWN] Error stopping ws_monitor singleton: {e}")
 
     if hasattr(app.state, "wallet_discovery_service"):
         try:
