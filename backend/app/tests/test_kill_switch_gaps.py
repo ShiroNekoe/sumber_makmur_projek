@@ -1,6 +1,6 @@
 import unittest
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.domain.models import OpenPosition
 from app.execution.executor import ParallelExecutionEngine
@@ -83,13 +83,15 @@ class TestKillSwitchGaps(unittest.TestCase):
 
     def test_dev_dump_fast_path(self):
         """
-        Verifies that a large sell specifically from the Dev wallet triggers
-        'kill_switch_dev_dump' fast-path.
+        Verifies that a large sell specifically from the Dev wallet (dev_wallet_address)
+        triggers 'kill_switch_dev_dump' fast-path, independently of copy-traded whale wallet_source.
         """
         dev_wallet = "DevWalletXYZ111111111111111111111111111111"
+        copy_trade_whale = "CopyTradeWhale1111111111111111111111111"
         pos = OpenPosition(
             position_id="pos_ks_dev_fastpath",
-            wallet_source=dev_wallet,
+            wallet_source=copy_trade_whale,
+            dev_wallet_address=dev_wallet,
             token_address="TokenDevTest",
             state="OPEN",
             sl_initial=0.9,
@@ -117,6 +119,14 @@ class TestKillSwitchGaps(unittest.TestCase):
             signer_address=dev_wallet
         )
         self.assertEqual(res_dev_dump, "kill_switch_dev_dump")
+
+        # Copy-trade whale sells tokens: should trigger kill_switch_large_sell (NOT dev dump)
+        res_whale_sell = engine.evaluate_reserve_change(
+            new_v_sol=15_000_000_000,
+            new_v_token=2_000_000_000_000,
+            signer_address=copy_trade_whale
+        )
+        self.assertEqual(res_whale_sell, "kill_switch_large_sell")
 
     def test_small_sell_below_threshold_ignored(self):
         """
@@ -188,6 +198,55 @@ class TestKillSwitchGaps(unittest.TestCase):
                 await engine.execute_exit("kill_switch_large_sell")
 
             self.assertTrue(engine.exited)
+
+        asyncio.run(run_test())
+
+    def test_anti_double_trigger_push_and_polling(self):
+        """
+        Simulates both push and polling tasks detecting kill signal simultaneously.
+        Verifies that self.lock prevents duplicate execute_exit runs and exit order
+        is broadcast exactly once.
+        """
+        async def run_test():
+            pos = OpenPosition(
+                position_id="pos_double_trigger_test",
+                wallet_source="WhaleWallet",
+                token_address="TokenDoubleTriggerTest",
+                state="OPEN",
+                entry_price=1.0,
+                sl_initial=0.9,
+                risk_pct=0.01,
+                position_size_usd=500.0,
+                confidence_score=0.85,
+                model_version="v0"
+            )
+
+            mock_position_repo = AsyncMock()
+            mock_trade_history = AsyncMock()
+            engine = ParallelExecutionEngine(
+                position=pos,
+                position_repo=mock_position_repo,
+                cooldown_repo=AsyncMock(),
+                model_registry_repo=AsyncMock(),
+                trade_history_repo=mock_trade_history
+            )
+
+            mock_keypair = MagicMock()
+            mock_keypair.pubkey.return_value = "DummyPublicKey11111111111111111111111111"
+
+            with patch("sys.argv", ["main.py"]), \
+                 patch("app.infrastructure.blockchain.wallet_manager.load_wallet_from_env", return_value=mock_keypair), \
+                 patch("app.infrastructure.blockchain.pumpportal_client.build_trade_transaction", new_callable=AsyncMock), \
+                 patch("app.infrastructure.blockchain.tx_signer.sign_and_broadcast_transaction", return_value="tx_sig_double"), \
+                 patch("app.infrastructure.blockchain.tx_signer.close_token_account", return_value="close_sig_double"):
+                # Spawn two concurrent exit triggers
+                t1 = asyncio.create_task(engine.execute_exit("kill_switch_large_sell"))
+                t2 = asyncio.create_task(engine.execute_exit("kill_switch_slippage_spike"))
+                await asyncio.gather(t1, t2)
+
+            self.assertTrue(engine.exited)
+            # Verify position_repo.update_position was called exactly ONCE (atomic execution lock)
+            self.assertEqual(mock_position_repo.update_position.call_count, 1)
 
         asyncio.run(run_test())
 

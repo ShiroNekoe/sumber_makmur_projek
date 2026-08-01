@@ -29,6 +29,7 @@ class OpenPosition(BaseModel):
     model_version: str
     slippage_actual: Optional[float] = None
     unrealized_pnl_usd: Optional[float] = None
+    dev_wallet_address: Optional[str] = None
 
     model_config = {
         "protected_namespaces": ()

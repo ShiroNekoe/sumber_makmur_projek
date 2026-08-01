@@ -78,7 +78,7 @@ class TestParallelExecutionEngine(unittest.IsolatedAsyncioTestCase):
         """
         await self.engine.start_monitoring()
         try:
-            self.assertEqual(len(self.engine.tasks), 2)
+            self.assertEqual(len(self.engine.tasks), 3)
             for task in self.engine.tasks:
                 self.assertIsInstance(task, asyncio.Task)
                 self.assertFalse(task.done())
@@ -181,14 +181,13 @@ class TestParallelExecutionEngine(unittest.IsolatedAsyncioTestCase):
         setelah posisi closed.
         """
         await self.engine.start_monitoring()
-        price_task, kill_switch_task = self.engine.tasks
 
         await self.engine.execute_exit("kill_switch_lp")
 
         # Beri kesempatan event loop memproses pembatalan task
         await asyncio.sleep(0)
-        self.assertTrue(price_task.cancelled() or price_task.done())
-        self.assertTrue(kill_switch_task.cancelled() or kill_switch_task.done())
+        for task in self.engine.tasks:
+            self.assertTrue(task.cancelled() or task.done())
 
     async def test_two_layers_trigger_concurrently_only_one_exit_recorded(self):
         """

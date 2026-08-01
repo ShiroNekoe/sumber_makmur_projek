@@ -93,15 +93,102 @@ class ParallelExecutionEngine:
     async def start_monitoring(self):
         """
         Spawns the three (now genuinely concurrent) protective tasks.
-        Lapis 1 & 2 berbagi satu task harga; Lapis 3 berjalan di task
-        terpisah dan tidak menunggu task harga sama sekali.
+        Lapis 1 & 2 berbagi satu task harga; Lapis 3 berjalan di dua task:
+        1. Polling fallback (_run_kill_switch_loop)
+        2. Real-time push-based accountSubscribe (_run_pda_subscription_loop)
         """
         logger.info(f"[PROTECTION] Initiating 3-layer parallel protection for position {self.position.position_id}")
+        
+        # Populate real dev_wallet_address via read-only RPC if not already present
+        if not getattr(self.position, "dev_wallet_address", None):
+            try:
+                from app.infrastructure.blockchain.bonding_curve_price import fetch_dev_wallet_address
+                dev_addr = await fetch_dev_wallet_address(self.position.token_address)
+                if dev_addr:
+                    self.position.dev_wallet_address = dev_addr
+            except Exception as err:
+                logger.debug(f"[PROTECTION] Could not fetch dev wallet address for {self.position.token_address[:8]}: {err}")
+
         self.tasks = [
             asyncio.create_task(self._run_price_protection_loop()),
             asyncio.create_task(self._run_kill_switch_loop()),
+            asyncio.create_task(self._run_pda_subscription_loop()),
         ]
-        
+
+    async def _run_pda_subscription_loop(self):
+        """
+        Push-based wallet-agnostic kill-switch task.
+        Subscribes to AccountInfo updates via WebSocket accountSubscribe for the bonding curve PDA account.
+        Cleanly unsubscribes on exit or loop termination.
+        """
+        try:
+            from app.infrastructure.blockchain.bonding_curve_price import get_bonding_curve_pda, parse_bonding_curve_account_data
+            pda = get_bonding_curve_pda(self.position.token_address)
+            if not pda:
+                return
+
+            sub_id = None
+            ws_url = settings.RPC_PRIMARY_URL.replace("https://", "wss://").replace("http://", "ws://")
+
+            try:
+                import websockets
+                import base64
+                import json
+                async with websockets.connect(ws_url, open_timeout=10.0) as ws:
+                    sub_payload = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "accountSubscribe",
+                        "params": [
+                            str(pda),
+                            {"encoding": "base64", "commitment": "confirmed"}
+                        ]
+                    }
+                    await ws.send(json.dumps(sub_payload))
+                    init_resp = await ws.recv()
+                    parsed_init = json.loads(init_resp)
+                    sub_id = parsed_init.get("result")
+                    logger.info(f"[PROTECTION] accountSubscribe active for PDA {str(pda)[:8]}... (sub_id={sub_id})")
+
+                    while not self.exited:
+                        msg_str = await ws.recv()
+                        msg_data = json.loads(msg_str)
+                        if isinstance(msg_data, dict) and "params" in msg_data:
+                            val = msg_data["params"].get("result", {}).get("value", {})
+                            raw_data = val.get("data")
+                            if isinstance(raw_data, list) and len(raw_data) > 0:
+                                b64_str = raw_data[0]
+                                decoded_bytes = base64.b64decode(b64_str)
+                                parsed_curve = parse_bonding_curve_account_data(decoded_bytes)
+                                if parsed_curve:
+                                    reason = self.evaluate_reserve_change(
+                                        parsed_curve["virtualSolReserves"],
+                                        parsed_curve["virtualTokenReserves"]
+                                    )
+                                    if reason:
+                                        logger.warning(f"[PROTECTION] [L3 Push] Wallet-agnostic kill signal: {reason}!")
+                                        await self.execute_exit(reason)
+                                        break
+            finally:
+                if sub_id:
+                    try:
+                        unsub_payload = {
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "accountUnsubscribe",
+                            "params": [sub_id]
+                        }
+                        await ws.send(json.dumps(unsub_payload))
+                        unsub_resp = await ws.recv()
+                        logger.info(f"[PROTECTION] accountUnsubscribe confirmed: {unsub_resp}")
+                    except Exception as unsub_err:
+                        logger.debug(f"[PROTECTION] Clean accountUnsubscribe attempt: {unsub_err}")
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"[PROTECTION] Error in PDA subscription loop: {e}", exc_info=True)
+
     async def _run_price_protection_loop(self):
         """
         Lapis 1 (Stop Loss) & Lapis 2 (Staged Trailing Take Profit).
@@ -258,7 +345,7 @@ class ParallelExecutionEngine:
                             f"[PROTECTION] [L3] On-chain price impact spiked +{impact_spike:.1%} "
                             f"({self._baseline_price_impact:.1%} -> {current_impact:.1%}) for {token_address[:8]}..."
                         )
-                        dev_address = getattr(self.position, "wallet_source", None)
+                        dev_address = getattr(self.position, "dev_wallet_address", None)
                         if signer_address and dev_address and signer_address.lower() == dev_address.lower():
                             return "kill_switch_dev_dump"
                         return "kill_switch_large_sell"
@@ -324,7 +411,7 @@ class ParallelExecutionEngine:
         if self._baseline_v_sol > 0:
             sol_reserve_drop_pct = (self._baseline_v_sol - new_v_sol) / self._baseline_v_sol
             if sol_reserve_drop_pct >= threshold:
-                dev_address = getattr(self.position, "wallet_source", None)
+                dev_address = getattr(self.position, "dev_wallet_address", None)
                 if signer_address and dev_address and signer_address.lower() == dev_address.lower():
                     return "kill_switch_dev_dump"
                 return "kill_switch_large_sell"

@@ -178,7 +178,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             peak_r_multiple=orm.peak_r_multiple,
             confidence_score=orm.confidence_score,
             model_version=orm.model_version,
-            slippage_actual=getattr(orm, "slippage_actual", None)
+            slippage_actual=getattr(orm, "slippage_actual", None),
+            dev_wallet_address=getattr(orm, "dev_wallet_address", None)
         )
 
     @db_locked
