@@ -44,6 +44,7 @@ class OpenPositionORM(Base):
     confidence_score = Column(Float, nullable=False)
     model_version = Column(String, ForeignKey("model_registry.model_version"), nullable=False)
     slippage_actual = Column(Float, nullable=True)
+    dev_wallet_address = Column(String, nullable=True)
 
     wallet = relationship("WatchlistWalletORM")
     model = relationship("ModelRegistryORM")

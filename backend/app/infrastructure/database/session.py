@@ -30,6 +30,23 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def run_db_migrations(engine_obj):
+    """Idempotent database migration for SQLite schema columns."""
+    try:
+        from sqlalchemy import text
+        with engine_obj.connect() as conn:
+            res = conn.execute(text("PRAGMA table_info(open_positions)"))
+            cols = [row[1] for row in res.fetchall()]
+            if cols and "dev_wallet_address" not in cols:
+                conn.execute(text("ALTER TABLE open_positions ADD COLUMN dev_wallet_address VARCHAR"))
+                conn.commit()
+    except Exception:
+        pass
+
+
+run_db_migrations(engine)
+
+
 def get_db():
     db = SessionLocal()
     try:

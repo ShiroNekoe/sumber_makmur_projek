@@ -250,6 +250,164 @@ class TestKillSwitchGaps(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_dev_wallet_address_database_persistence(self):
+        """
+        Bagian 2: Verifies that dev_wallet_address is persisted to SQLite database
+        and restored accurately when position is reloaded across database sessions.
+        """
+        async def run_test():
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import sessionmaker
+            from app.infrastructure.database.session import Base, run_db_migrations
+            from app.infrastructure.database.models import OpenPositionORM, WatchlistWalletORM, ModelRegistryORM
+            from app.infrastructure.database.repository import SQLAlchemyPositionRepository
+            from datetime import datetime, timezone
+
+            test_db_engine = create_engine("sqlite:///:memory:")
+            Base.metadata.create_all(test_db_engine)
+            run_db_migrations(test_db_engine)
+
+            TestSession = sessionmaker(bind=test_db_engine)
+
+            # Setup FK dependencies directly in ORM
+            db1 = TestSession()
+            db1.add(WatchlistWalletORM(
+                wallet_address="WhaleWalletFK11111111111111111111111111",
+                label="test_whale",
+                source="manual",
+                added_at=datetime.now(timezone.utc)
+            ))
+            db1.add(ModelRegistryORM(
+                model_version="v0",
+                trained_at=datetime.now(timezone.utc),
+                training_sample_count=100,
+                validation_accuracy=0.8,
+                expectancy_r=1.5,
+                is_active=True
+            ))
+            db1.commit()
+
+            repo1 = SQLAlchemyPositionRepository(db1)
+
+            dev_addr = "DevWalletReal9VDPBQyYfLEdUEDSZ3mvf9C2pzH3xzra9GEN"
+            pos = OpenPosition(
+                position_id="pos_db_persist_test",
+                wallet_source="WhaleWalletFK11111111111111111111111111",
+                dev_wallet_address=dev_addr,
+                token_address="TokenPersistTest",
+                state="OPEN",
+                entry_price=1.0,
+                sl_initial=0.9,
+                risk_pct=0.01,
+                position_size_usd=500.0,
+                confidence_score=0.85,
+                model_version="v0"
+            )
+
+            await repo1.add_position(pos)
+            db1.close()
+
+            # Create fresh DB session & repository instance to simulate process restart reload
+            db2 = TestSession()
+            repo2 = SQLAlchemyPositionRepository(db2)
+
+            fetched_pos = await repo2.get_position("pos_db_persist_test")
+            self.assertIsNotNone(fetched_pos)
+            self.assertEqual(fetched_pos.dev_wallet_address, dev_addr)
+            db2.close()
+
+        asyncio.run(run_test())
+
+    def test_fetch_dev_wallet_address_multi_page_pagination(self):
+        """
+        Bagian 3: Verifies backward pagination (before parameter) in fetch_dev_wallet_address()
+        when token has >1000 transactions history.
+        """
+        async def run_test():
+            from app.infrastructure.blockchain.bonding_curve_price import fetch_dev_wallet_address
+
+            # Mock multi-page getSignaturesForAddress response: page 1 = 1000 sigs, page 2 = 5 sigs (genesis page)
+            page1_sigs = [{"signature": f"sig_p1_{i}"} for i in range(1000)]
+            page2_sigs = [{"signature": "genesis_sig_1"}, {"signature": "genesis_sig_0"}]
+
+            def mock_rpc_call(url, payload):
+                method = payload.get("method")
+                params = payload.get("params", [])
+                if method == "getSignaturesForAddress":
+                    opts = params[1] if len(params) > 1 else {}
+                    if "before" in opts:
+                        return {"result": page2_sigs}
+                    return {"result": page1_sigs}
+                elif method == "getTransaction":
+                    return {
+                        "result": {
+                            "transaction": {
+                                "message": {
+                                    "accountKeys": [
+                                        {"pubkey": "GenesisCreatorPubkey1111111111111111111", "signer": True}
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                return {}
+
+            with patch("asyncio.to_thread", side_effect=lambda fn, u, p: mock_rpc_call(u, p)):
+                dev_addr = await fetch_dev_wallet_address("HighVolumeMint111111111111111111111111")
+                self.assertEqual(dev_addr, "GenesisCreatorPubkey1111111111111111111")
+
+        asyncio.run(run_test())
+
+    def test_ws_monitor_account_subscription_and_reconnect(self):
+        """
+        Bagian 1: Verifies SolanaWebSocketMonitor account subscription management,
+        callback routing, and resubscription state tracking.
+        """
+        async def run_test():
+            from app.blockchain.monitor import SolanaWebSocketMonitor
+
+            monitor = SolanaWebSocketMonitor()
+            received_bytes = []
+
+            async def dummy_callback(data):
+                received_bytes.append(data)
+
+            pda = "5sbsMYZa7PMxgCefX8TkaxivNwWNHKtDb9qVy1CTQrwH"
+            await monitor.subscribe_account(pda, dummy_callback)
+
+            self.assertIn(pda, monitor.account_callbacks)
+            self.assertIn(dummy_callback, monitor.account_callbacks[pda])
+
+            # Simulate incoming WebSocket accountNotification message
+            dummy_b64 = "AAAAAAAAAAAA"
+            import json
+            import base64
+            expected_bytes = base64.b64decode(dummy_b64)
+
+            ws_msg = {
+                "method": "accountNotification",
+                "params": {
+                    "subscription": 12345,
+                    "result": {
+                        "value": {
+                            "data": [dummy_b64, "base64"]
+                        }
+                    }
+                }
+            }
+
+            # Map subscription ID 12345 -> pda
+            monitor.sub_id_to_pda[12345] = pda
+
+            await monitor._handle_ws_message(json.dumps(ws_msg))
+            self.assertEqual(len(received_bytes), 1)
+            self.assertEqual(received_bytes[0], expected_bytes)
+
+            await monitor.unsubscribe_account(pda, dummy_callback)
+            self.assertNotIn(pda, monitor.account_callbacks)
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()

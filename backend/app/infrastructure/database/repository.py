@@ -212,7 +212,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             peak_r_multiple=position.peak_r_multiple,
             confidence_score=position.confidence_score,
             model_version=position.model_version,
-            slippage_actual=position.slippage_actual
+            slippage_actual=position.slippage_actual,
+            dev_wallet_address=position.dev_wallet_address
         )
         self.db.add(orm)
         self.db.commit()
@@ -233,6 +234,7 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             orm.peak_r_multiple = position.peak_r_multiple
             orm.confidence_score = position.confidence_score
             orm.model_version = position.model_version
+            orm.dev_wallet_address = position.dev_wallet_address
             if hasattr(orm, "slippage_actual"):
                 orm.slippage_actual = position.slippage_actual
             self.db.commit()

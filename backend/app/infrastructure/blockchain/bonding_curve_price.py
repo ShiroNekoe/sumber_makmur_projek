@@ -218,6 +218,8 @@ async def fetch_dev_wallet_address(
     """
     Fetches the actual deployer/creator wallet address for a token mint by querying
     its creation transaction on-chain via read-only RPC.
+    Includes backward pagination (before parameter) to find true genesis transaction
+    even for high-volume tokens (>1000 transactions).
     """
     rpc_chain = [
         rpc_url or settings.RPC_PRIMARY_URL,
@@ -228,48 +230,71 @@ async def fetch_dev_wallet_address(
     seen = set()
     rpc_chain = [u for u in rpc_chain if u and not (u in seen or seen.add(u))]
 
-    sig_payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getSignaturesForAddress",
-        "params": [token_mint_str, {"limit": 1000}]
-    }
+    def sync_rpc_call(target_url, req_payload):
+        headers = {"Content-Type": "application/json"}
+        req = urllib.request.Request(
+            target_url,
+            data=json.dumps(req_payload).encode("utf-8"),
+            headers=headers,
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as e:
+            return {"error": str(e)}
 
     for url in rpc_chain:
-        def sync_rpc_call(target_url, req_payload):
-            headers = {"Content-Type": "application/json"}
-            req = urllib.request.Request(
-                target_url,
-                data=json.dumps(req_payload).encode("utf-8"),
-                headers=headers,
-                method="POST"
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=8) as response:
-                    return json.loads(response.read().decode("utf-8"))
-            except Exception as e:
-                return {"error": str(e)}
+        creation_sig = None
+        before_sig = None
+        MAX_PAGES = 10  # Cover up to 10,000 transactions history window
 
-        res_sigs = await asyncio.to_thread(sync_rpc_call, url, sig_payload)
-        if isinstance(res_sigs, dict) and "result" in res_sigs and isinstance(res_sigs["result"], list):
-            sigs = res_sigs["result"]
-            if sigs:
+        for page in range(MAX_PAGES):
+            params: list = [token_mint_str, {"limit": 1000}]
+            if before_sig:
+                params[1]["before"] = before_sig
+
+            sig_payload = {
+                "jsonrpc": "2.0",
+                "id": page + 1,
+                "method": "getSignaturesForAddress",
+                "params": params
+            }
+
+            res_sigs = await asyncio.to_thread(sync_rpc_call, url, sig_payload)
+            if isinstance(res_sigs, dict) and "result" in res_sigs and isinstance(res_sigs["result"], list):
+                sigs = res_sigs["result"]
+                if not sigs:
+                    break
+
                 creation_sig = sigs[-1].get("signature")
-                if creation_sig:
-                    tx_payload = {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "getTransaction",
-                        "params": [creation_sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
-                    }
-                    res_tx = await asyncio.to_thread(sync_rpc_call, url, tx_payload)
-                    if isinstance(res_tx, dict) and "result" in res_tx and res_tx["result"]:
-                        acc_keys = res_tx["result"].get("transaction", {}).get("message", {}).get("accountKeys", [])
-                        for acc in acc_keys:
-                            if isinstance(acc, dict) and acc.get("signer"):
-                                dev_pubkey = acc.get("pubkey")
-                                if dev_pubkey and len(dev_pubkey) >= 32:
-                                    logger.info(f"[BONDING CURVE] Fetched real dev wallet address {dev_pubkey} for token {token_mint_str[:8]}...")
-                                    return dev_pubkey
+
+                # If page returns < 1000 signatures, we have reached the true genesis transaction!
+                if len(sigs) < 1000:
+                    logger.info(f"[BONDING CURVE] Genesis signature found at page {page+1} ({len(sigs)} sigs in final page).")
+                    break
+
+                # Advance pagination
+                before_sig = creation_sig
+                await asyncio.sleep(0.1)  # Rate limit protection between pages
+            else:
+                break
+
+        if creation_sig:
+            tx_payload = {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "getTransaction",
+                "params": [creation_sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]
+            }
+            res_tx = await asyncio.to_thread(sync_rpc_call, url, tx_payload)
+            if isinstance(res_tx, dict) and "result" in res_tx and res_tx["result"]:
+                acc_keys = res_tx["result"].get("transaction", {}).get("message", {}).get("accountKeys", [])
+                for acc in acc_keys:
+                    if isinstance(acc, dict) and acc.get("signer"):
+                        dev_pubkey = acc.get("pubkey")
+                        if dev_pubkey and len(dev_pubkey) >= 32:
+                            logger.info(f"[BONDING CURVE] Fetched real dev wallet address {dev_pubkey} for token {token_mint_str[:8]}...")
+                            return dev_pubkey
 
     return None

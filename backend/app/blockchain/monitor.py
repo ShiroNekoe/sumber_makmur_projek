@@ -5,7 +5,7 @@ import re
 import time
 import urllib.request
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Callable
 import websockets
 
 from app.core.config import settings
@@ -53,6 +53,12 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         # Deduplication memory window (signature -> timestamp_utc added)
         self.signature_dedup_window: Dict[str, float] = {}
         self.dedup_cleanup_task: Optional[asyncio.Task] = None
+
+        # Account PDA subscriptions (pda_address -> set of callback functions)
+        self.account_callbacks: Dict[str, Set[Callable]] = {}
+        self.pda_sub_ids: Dict[str, int] = {}
+        self.sub_id_to_pda: Dict[int, str] = {}
+        self.pending_sub_requests: Dict[int, str] = {}
 
     def _http_to_ws(self, http_url: str) -> str:
         """Helper to convert http/https RPC endpoints to ws/wss."""
@@ -117,8 +123,8 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         backoff = 1.0
         
         while self.is_running:
-            if not self.active_wallets:
-                logger.debug("No active wallets to monitor. Waiting 5s...")
+            if not self.active_wallets and not self.account_callbacks:
+                logger.debug("No active wallets or account PDAs to monitor. Waiting 5s...")
                 await asyncio.sleep(5)
                 continue
                 
@@ -132,7 +138,11 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
                     # Send subscriptions for each wallet
                     for wallet in self.active_wallets:
                         await self._subscribe_to_wallet(ws, wallet)
-                    
+
+                    # Send subscriptions for each active account PDA (reconnect resilience)
+                    for pda_addr in list(self.account_callbacks.keys()):
+                        await self._subscribe_to_account(ws, pda_addr)
+
                     logger.info("All subscriptions established successfully.")
                     
                     # Event ingestion loop
@@ -326,6 +336,58 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
         await ws.send(json.dumps(payload))
         logger.info(f"Subscribed to logs for wallet: {wallet_address}")
 
+    async def _subscribe_to_account(self, ws, pda_address: str):
+        """Subscribes to account state changes for the PDA address."""
+        req_id = int(time.time() * 1000)
+        self.pending_sub_requests[req_id] = pda_address
+        payload = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "accountSubscribe",
+            "params": [
+                pda_address,
+                {"encoding": "base64", "commitment": "confirmed"}
+            ]
+        }
+        await ws.send(json.dumps(payload))
+        logger.info(f"[WS MONITOR] Subscribed to account PDA: {pda_address[:8]}... (req_id={req_id})")
+
+    async def _unsubscribe_from_account(self, ws, pda_address: str):
+        """Unsubscribes from account state changes for the PDA address."""
+        sub_id = self.pda_sub_ids.get(pda_address)
+        if sub_id:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": int(time.time() * 1000),
+                "method": "accountUnsubscribe",
+                "params": [sub_id]
+            }
+            await ws.send(json.dumps(payload))
+            logger.info(f"[WS MONITOR] Unsubscribed from account PDA {pda_address[:8]}... (sub_id={sub_id})")
+            self.pda_sub_ids.pop(pda_address, None)
+            self.sub_id_to_pda.pop(sub_id, None)
+
+    async def subscribe_account(self, pda_address: str, callback: Callable):
+        """Public API: Subscribe callback function to account PDA updates."""
+        if pda_address not in self.account_callbacks:
+            self.account_callbacks[pda_address] = set()
+        self.account_callbacks[pda_address].add(callback)
+
+        if self.websocket:
+            async with self._ws_lock:
+                await self._subscribe_to_account(self.websocket, pda_address)
+
+    async def unsubscribe_account(self, pda_address: str, callback: Optional[Callable] = None):
+        """Public API: Unsubscribe callback function from account PDA updates."""
+        if pda_address in self.account_callbacks:
+            if callback:
+                self.account_callbacks[pda_address].discard(callback)
+            if not callback or len(self.account_callbacks[pda_address]) == 0:
+                self.account_callbacks.pop(pda_address, None)
+                if self.websocket:
+                    async with self._ws_lock:
+                        await self._unsubscribe_from_account(self.websocket, pda_address)
+
     # Known DEX/swap program IDs we care about
     DEX_PROGRAM_IDS = {
         "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium AMM V4
@@ -339,6 +401,38 @@ class SolanaWebSocketMonitor(IWalletMovementMonitor):
     async def _handle_ws_message(self, raw_message: str):
         try:
             msg = json.loads(raw_message)
+
+            if isinstance(msg, dict):
+                # Handle accountSubscribe confirmation pairing
+                if "id" in msg and msg["id"] in self.pending_sub_requests:
+                    req_id = msg["id"]
+                    pda_addr = self.pending_sub_requests.pop(req_id)
+                    sub_id = msg.get("result")
+                    if sub_id:
+                        self.pda_sub_ids[pda_addr] = sub_id
+                        self.sub_id_to_pda[sub_id] = pda_addr
+                        logger.info(f"[WS MONITOR] Confirmed accountSubscribe for {pda_addr[:8]}... (sub_id={sub_id})")
+
+                # Handle accountNotifications (accountSubscribe updates)
+                if msg.get("method") == "accountNotification":
+                    params = msg.get("params", {})
+                    sub_id = params.get("subscription")
+                    pda_addr = self.sub_id_to_pda.get(sub_id)
+                    val = params.get("result", {}).get("value", {})
+                    raw_data = val.get("data")
+                    if isinstance(raw_data, list) and len(raw_data) > 0 and pda_addr:
+                        import base64
+                        decoded_bytes = base64.b64decode(raw_data[0])
+                        callbacks = list(self.account_callbacks.get(pda_addr, []))
+                        for cb in callbacks:
+                            try:
+                                if asyncio.iscoroutinefunction(cb):
+                                    await cb(decoded_bytes)
+                                else:
+                                    cb(decoded_bytes)
+                            except Exception as cb_err:
+                                logger.error(f"[WS MONITOR] Callback error for PDA {pda_addr[:8]}: {cb_err}")
+
             if "method" in msg and msg["method"] == "logsNotification":
                 params = msg.get("params", {})
                 result = params.get("result", {})
@@ -679,3 +773,13 @@ class SolanaMonitorSimulator(IWalletMovementMonitor):
                 logger.info(f"[SIMULATOR] Emitted fake event {event_type} from {wallet} for {token} (${amount:.1f})")
             except asyncio.QueueFull:
                 pass
+
+
+_global_ws_monitor: Optional[SolanaWebSocketMonitor] = None
+
+
+def get_ws_monitor() -> SolanaWebSocketMonitor:
+    global _global_ws_monitor
+    if _global_ws_monitor is None:
+        _global_ws_monitor = SolanaWebSocketMonitor()
+    return _global_ws_monitor
