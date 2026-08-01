@@ -285,23 +285,32 @@ class AutoTradeExecutor:
                     return None
 
                 # Calculate real live slippage (quoted price before order vs effective execution price post-order)
+                quoted_price_usd = float(entry_price) if entry_price else None
+                executed_price_usd = None
                 live_slippage = None
-                if self.token_info_service and entry_price and entry_price > 0:
+
+                if quoted_price_usd and quoted_price_usd > 0 and self.token_info_service:
                     try:
                         post_token_info = await self.token_info_service.get_token_info(token_address)
                         if post_token_info and post_token_info.get("price_usd"):
-                            executed_price = float(post_token_info["price_usd"])
-                            live_slippage = abs(executed_price - entry_price) / entry_price
+                            executed_price_usd = float(post_token_info["price_usd"])
+                            live_slippage = (quoted_price_usd - executed_price_usd) / quoted_price_usd
                             logger.info(
-                                f"[LIVE SLIPPAGE] Entry swap executed for {token_address[:8]}... "
-                                f"Quoted: ${entry_price:.6f}, Executed: ${executed_price:.6f}, "
+                                f"[REAL SLIPPAGE] Entry swap executed for {token_address[:8]}... "
+                                f"Quoted: ${quoted_price_usd:.6f}, Executed: ${executed_price_usd:.6f}, "
                                 f"Real Slippage: {live_slippage:.4%}"
                             )
                     except Exception as slip_err:
-                        logger.warning(f"[LIVE SLIPPAGE] Failed to query post-swap token price for slippage: {slip_err}")
+                        logger.warning(
+                            f"[REAL SLIPPAGE] [FAILED] Could not query post-swap transaction/price for token {token_address[:8]}...: {slip_err}. "
+                            f"Storing slippage_actual = None (null) per Section B.4 protocol."
+                        )
 
                 if live_slippage is None:
-                    live_slippage = getattr(feature_vector, "slippage_actual", None) or 0.01
+                    logger.warning(
+                        f"[REAL SLIPPAGE] Live slippage unverified for token {token_address[:8]}... "
+                        f"Storing slippage_actual = None (null) in database."
+                    )
                     
                 # 4. Save state to SQLite (state = OPEN)
                 position_id = f"pos_{uuid.uuid4().hex[:8]}"
