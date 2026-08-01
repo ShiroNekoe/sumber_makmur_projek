@@ -59,17 +59,26 @@ class TradeGuard:
         if not is_testing and prediction.signature in TradeGuard._processed_signatures:
             return False, f"Blocked: Idempotency Guard - Duplicate signature {prediction.signature[:8]} already processed."
         
-        # 1. Slippage Cap validation
+        # 1. Real On-Chain Pre-Trade Slippage / Price-Impact Estimation
         slippage_estimate = 0.005
-        if feature_vector is not None:
-            slippage_estimate = feature_vector.slippage_actual or 0.005
-            
+        trade_sol_amount = (position_size_usd / sol_price_usd) if sol_price_usd > 0 else 0.5
+
+        try:
+            from app.infrastructure.blockchain.bonding_curve_price import estimate_bonding_curve_price_impact
+            impact = await estimate_bonding_curve_price_impact(token_address, trade_sol_amount)
+            if impact is not None and impact > 0:
+                slippage_estimate = impact
+            elif feature_vector is not None and getattr(feature_vector, "slippage_actual", None) is not None:
+                slippage_estimate = feature_vector.slippage_actual
+        except Exception as impact_err:
+            logger.debug(f"[TRADE GUARD] Could not estimate bonding curve price impact for {token_address[:8]}...: {impact_err}")
+
         max_slippage = getattr(settings, "SLIPPAGE_TOLERANCE", 0.05)
         # Enforce strict 15% system slippage cap
         if slippage_estimate > 0.15:
-            return False, f"Blocked: Slippage {slippage_estimate:.1%} exceeds strict 15% system cap."
+            return False, f"Blocked: Estimated price impact {slippage_estimate:.1%} exceeds strict 15% system cap."
         if slippage_estimate > max_slippage:
-            return False, f"Blocked: Slippage {slippage_estimate:.1%} exceeds configured tolerance of {max_slippage:.1%}."
+            return False, f"Blocked: Estimated price impact {slippage_estimate:.1%} exceeds configured tolerance of {max_slippage:.1%}."
 
         # 2. Check status of system (Kill-Switch / Degraded Mode)
         from app.blockchain.monitor import SolanaWebSocketMonitor

@@ -28,6 +28,7 @@ class OpenPosition(BaseModel):
     confidence_score: float
     model_version: str
     slippage_actual: Optional[float] = None
+    unrealized_pnl_usd: Optional[float] = None
 
     model_config = {
         "protected_namespaces": ()

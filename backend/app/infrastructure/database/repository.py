@@ -183,7 +183,9 @@ class SQLAlchemyPositionRepository(IPositionRepository):
 
     @db_locked
     async def get_open_positions(self) -> List[OpenPosition]:
-        orms = self.db.query(OpenPositionORM).filter(OpenPositionORM.state.in_(["OPEN", "PENDING_ENTRY", "EXITING"])).all()
+        orms = self.db.query(OpenPositionORM).filter(
+            OpenPositionORM.state.in_(["OPEN", "PENDING_ENTRY", "EXITING", "EXIT_FAILED_MANUAL_REVIEW"])
+        ).all()
         return [self._to_domain(o) for o in orms]
 
     @db_locked

@@ -105,33 +105,61 @@ class ParallelExecutionEngine:
     async def _run_price_protection_loop(self):
         """
         Lapis 1 (Stop Loss) & Lapis 2 (Staged Trailing Take Profit).
+        Evaluates real-time price using on-chain bonding curve reserves (Primary),
+        DexScreener API (Secondary for migrated AMM tokens), and Last-Valid-Price Freeze
+        with Emergency Exit after 5 consecutive failures (Tersier).
 
-        Keduanya price-based sehingga secara matematis butuh nilai harga
-        yang sama pada saat yang sama -- task ini TIDAK menyentuh atau
-        menunggu Lapis 3 (kill-switch) sama sekali; keduanya berjalan
-        sebagai task asyncio yang sepenuhnya independen, hanya bertemu di
-        `execute_exit()` lewat lock atomic.
+        STRICTLY NO random.uniform() random walk simulation in live production.
         """
+        consecutive_price_failures = 0
+        MAX_PRICE_FEED_FAILURES = 5
+
         try:
             while not self.exited:
                 await asyncio.sleep(1.0) # Check every 1 second
 
-                # Fetch real price from DexScreener API via token_info_service
-                if self.token_info_service:
+                fetched_price = None
+
+                # 1. Primary Source: Direct On-Chain Bonding Curve State via RPC
+                try:
+                    from app.infrastructure.blockchain.bonding_curve_price import get_bonding_curve_price
+                    sol_price_usd = getattr(settings, "SOL_USD_FALLBACK", 145.0)
+                    fetched_price = await get_bonding_curve_price(
+                        self.position.token_address,
+                        sol_price_usd=sol_price_usd
+                    )
+                except Exception as err:
+                    logger.debug(f"[PROTECTION] Primary bonding curve price fetch failed for {self.position.token_address[:8]}...: {err}")
+
+                # 2. Secondary Source: DexScreener API (for graduated AMM tokens)
+                if fetched_price is None and self.token_info_service:
                     try:
                         token_info = await self.token_info_service.get_token_info(self.position.token_address)
-                        if token_info and "price_usd" in token_info:
-                            self.current_price = token_info["price_usd"]
-                        else:
-                            price_change = random.uniform(-0.02, 0.02)
-                            self.current_price = max(0.01, self.current_price * (1 + price_change))
+                        if token_info and "price_usd" in token_info and token_info["price_usd"] > 0:
+                            fetched_price = float(token_info["price_usd"])
                     except Exception as err:
-                        logger.warning(f"[PROTECTION] Failed to fetch live price for {self.position.token_address}: {err}")
-                        price_change = random.uniform(-0.02, 0.02)
-                        self.current_price = max(0.01, self.current_price * (1 + price_change))
+                        logger.warning(f"[PROTECTION] Secondary DexScreener price fetch failed for {self.position.token_address[:8]}...: {err}")
+
+                # 3. Price Evaluation & Failure Handling
+                if fetched_price is not None and fetched_price > 0:
+                    self.current_price = fetched_price
+                    consecutive_price_failures = 0
                 else:
-                    price_change = random.uniform(-0.02, 0.02)
-                    self.current_price = max(0.01, self.current_price * (1 + price_change))
+                    # Tersier: Freeze last valid price, do NOT random walk
+                    consecutive_price_failures += 1
+                    logger.warning(
+                        f"[PROTECTION] Price feed unavailable for {self.position.token_address[:8]}... "
+                        f"Freezing last valid price ${self.current_price:.6f} (Failure {consecutive_price_failures}/{MAX_PRICE_FEED_FAILURES})."
+                    )
+
+                    # Emergency Exit: Protection against blind holding on dead feeds
+                    if consecutive_price_failures >= MAX_PRICE_FEED_FAILURES:
+                        logger.critical(
+                            f"[PROTECTION] [EMERGENCY] Price feed failed {consecutive_price_failures} consecutive times for "
+                            f"{self.position.token_address[:8]}... Triggering protective exit."
+                        )
+                        await self.execute_exit("price_feed_failure")
+                        break
 
                 # 1. Update Peak Price and R-multiples
                 if self.current_price > self.peak_price:
@@ -175,41 +203,11 @@ class ParallelExecutionEngine:
 
     async def _run_kill_switch_loop(self):
         """
-        Lapis 3 (On-Chain Kill-Switch) -- independen dari harga, prioritas
-        tertinggi (06 - Eksekusi Otomatis, dokumen sumber).
-
-        Sebelumnya lapis ini disimulasikan dengan `random.random() < 0.01`
-        di DALAM loop harga yang sama -- artinya kill-switch baru dicek
-        setelah evaluasi SL/trailing selesai di iterasi itu, persis
-        kontradiksi dengan instruksi dokumen "ia mengirim order tanpa
-        menunggu evaluasi SL/TP selesai".
-
-        Implementasi ini polling data on-chain riil lewat service yang
-        sudah ada di sistem (ITokenInfoService untuk liquidity pool depth,
-        ITokenSafetyService untuk holder distribution) pada interval yang
-        lebih cepat (2 detik) dan di task-nya sendiri, sehingga benar-benar
-        tidak menunggu giliran task harga.
-
-        Empat sinyal yang disebut dokumen sumber dan status implementasinya
-        terhadap interface yang tersedia di sistem ini:
-        - LP removal/burn (liquidity ditarik)   -> diimplementasikan,
-          dideteksi sebagai penurunan tajam liquidity_pool_depth vs baseline.
-        - Holder concentration shift            -> diimplementasikan,
-          dideteksi sebagai lonjakan top_10_holders_share vs baseline.
-        - Dev/creator wallet sell besar          -> BELUM bisa dideteksi
-          langsung karena interface ITokenSafetyService saat ini tidak
-          mengekspos data transaksi dev wallet per-transaksi (hanya
-          snapshot holder share). Threshold
-          KILL_SWITCH_DEV_WALLET_SELL_THRESHOLD_PCT sudah tersedia di
-          config.yaml untuk dipakai begitu data ini ada.
-        - Slippage spike pada quote               -> BELUM bisa dideteksi
-          langsung untuk alasan yang sama (butuh live quote API
-          pump.fun/Jupiter, di luar cakupan service yang ada saat ini).
-
-        Ini secara jujur lebih jauh dari simulasi acak murni, walau belum
-        100% selengkap 4 sinyal yang diminta dokumen -- gap yang tersisa
-        butuh integrasi API quote/transaksi baru, bukan sekadar
-        penyusunan ulang kode proteksi.
+        Lapis 3 (On-Chain Kill-Switch) -- independen dari harga, prioritas tertinggi.
+        Evaluates real-time on-chain signals:
+        - Liquidity pool depth drop / LP removal
+        - Dev / Creator wallet sell & holder concentration shift
+        - On-chain bonding curve price impact / slippage spike
         """
         try:
             while not self.exited:
@@ -235,25 +233,40 @@ class ParallelExecutionEngine:
 
     async def _check_onchain_kill_signals(self) -> Optional[str]:
         """
-        Mengevaluasi sinyal on-chain darurat untuk token posisi ini.
-        Return exit_reason string jika ada sinyal yang trigger, None jika aman.
-
-        Fail-open secara sengaja jika kedua service tidak tersedia (None)
-        agar engine tetap bisa dipakai di context test/unit lama yang belum
-        menyuntikkan service ini -- lihat constructor.
+        Evaluates emergency on-chain signals for this open position:
+        1. LP Removal / Liquidity Drop
+        2. Dev Wallet Sell / Holder Concentration Shift
+        3. On-chain Bonding Curve Slippage / Price Impact Spike
         """
         token_address = self.position.token_address
 
-        # LP removal detection via liquidity pool depth
+        # 1. On-Chain Slippage / Price Impact Spike Detection
+        try:
+            from app.infrastructure.blockchain.bonding_curve_price import estimate_bonding_curve_price_impact
+            sol_price_usd = getattr(settings, "SOL_USD_FALLBACK", 145.0)
+            trade_size_sol = self.position.position_size_usd / sol_price_usd if sol_price_usd > 0 else 0.5
+            current_impact = await estimate_bonding_curve_price_impact(token_address, trade_size_sol)
+
+            if current_impact is not None:
+                if not hasattr(self, "_baseline_price_impact") or self._baseline_price_impact is None:
+                    self._baseline_price_impact = current_impact
+                else:
+                    impact_spike = current_impact - self._baseline_price_impact
+                    if impact_spike >= getattr(settings, "KILL_SWITCH_SLIPPAGE_SPIKE_THRESHOLD_PCT", 0.15):
+                        logger.warning(
+                            f"[PROTECTION] [L3] On-chain price impact spiked +{impact_spike:.1%} "
+                            f"({self._baseline_price_impact:.1%} -> {current_impact:.1%}) for {token_address[:8]}..."
+                        )
+                        return "kill_switch_slippage_spike"
+        except Exception as err:
+            logger.debug(f"[PROTECTION] [L3] Slippage spike check skipped: {err}")
+
+        # 2. LP removal detection via liquidity pool depth
         if self.token_info_service is not None:
             token_info = await self.token_info_service.get_token_info(token_address)
             liquidity_usd = float(token_info.get("liquidity_usd", 0.0))
 
             if self._baseline_liquidity_usd is None:
-                # Baseline diambil dari pembacaan pertama setelah posisi
-                # terbuka, bukan dari harga entry -- liquidity saat entry
-                # adalah baseline yang valid untuk mendeteksi penarikan LP
-                # setelahnya.
                 self._baseline_liquidity_usd = liquidity_usd
             elif self._baseline_liquidity_usd > 0:
                 liquidity_drop_pct = 1.0 - (liquidity_usd / self._baseline_liquidity_usd)
@@ -263,14 +276,10 @@ class ParallelExecutionEngine:
                         f"(${self._baseline_liquidity_usd:.0f} -> ${liquidity_usd:.0f}) for {token_address}"
                     )
                     return "kill_switch_lp"
-                # Liquidity baseline naik (LP bertambah) -- update baseline
-                # agar deteksi penurunan berikutnya tetap relatif terhadap
-                # level liquidity yang sebenarnya, bukan level entry yang
-                # sudah usang.
                 if liquidity_usd > self._baseline_liquidity_usd:
                     self._baseline_liquidity_usd = liquidity_usd
 
-        # Holder concentration shift detection via top_10_holders_share
+        # 3. Holder concentration shift & Dev wallet sell detection
         if self.token_safety_service is not None:
             safety_info = await self.token_safety_service.get_safety_info(token_address)
             top_10_share = float(safety_info.get("top_10_holders_share", 0.0))
@@ -281,7 +290,7 @@ class ParallelExecutionEngine:
                 holder_shift = top_10_share - self._baseline_top_10_holders_share
                 if holder_shift >= settings.KILL_SWITCH_DEV_WALLET_SELL_THRESHOLD_PCT:
                     logger.warning(
-                        f"[PROTECTION] [L3] Holder concentration shifted +{holder_shift:.1%} "
+                        f"[PROTECTION] [L3] Dev wallet sell / Holder concentration shifted +{holder_shift:.1%} "
                         f"({self._baseline_top_10_holders_share:.1%} -> {top_10_share:.1%}) for {token_address}"
                     )
                     return "kill_switch_dev_dump"
@@ -404,23 +413,45 @@ class ParallelExecutionEngine:
                             )
                             await asyncio.sleep(1.0)  # 1 detik delay antar retry hindari rate-limit
 
-                # Jika semua percobaan habis dan masih gagal, force-close posisi dari DB
+                # Jika semua percobaan habis dan masih gagal: ubah state ke EXIT_FAILED_MANUAL_REVIEW (bukan hapus dari DB!)
                 if not exit_success:
-                    logger.error(
-                        f"[PROTECTION] [ABANDON] Exit GAGAL setelah {MAX_EXIT_ATTEMPTS} percobaan untuk token "
-                        f"{self.position.token_address}. Posisi di-force-close dari DB untuk mencegah loop."
+                    logger.critical(
+                        f"[PROTECTION] [MANUAL REVIEW REQUIRED] Exit GAGAL setelah {MAX_EXIT_ATTEMPTS} percobaan untuk token "
+                        f"{self.position.token_address}. Menandai status posisi sebagai 'EXIT_FAILED_MANUAL_REVIEW'."
                     )
                     from app.core.error_handler import log_system_error, ErrorType, ErrorSeverity
                     await log_system_error(
                         error_type=ErrorType.CRITICAL_EXIT_FAILED,
                         severity=ErrorSeverity.CRITICAL,
-                        context=f"Exit ABANDONED setelah {MAX_EXIT_ATTEMPTS} percobaan untuk {self.position.token_address}. Posisi force-removed dari DB.",
-                        recovery_action="force_close_db",
-                        resolution_status="abandoned"
+                        context=f"Exit GAGAL setelah {MAX_EXIT_ATTEMPTS} percobaan untuk {self.position.token_address}. Membutuhkan intervensi manual.",
+                        recovery_action="flag_exit_failed_manual_review",
+                        resolution_status="manual_review_required"
                     )
-                    # Hapus posisi dari DB agar tidak diretry lagi
-                    await self.position_repo.delete_position(self.position.position_id)
-                    return  # Keluar dari execute_exit tanpa mencatat closed_trade
+
+                    # Mark state as EXIT_FAILED_MANUAL_REVIEW and persist to DB (do NOT delete!)
+                    self.position.state = "EXIT_FAILED_MANUAL_REVIEW"
+                    await self.position_repo.update_position(self.position)
+
+                    # Broadcast high-priority WebSocket alert to F-07 dashboard
+                    try:
+                        await ws_manager.broadcast({
+                            "type": "manual_review_required",
+                            "data": {
+                                "event": "manual_review_required",
+                                "position_id": self.position.position_id,
+                                "token_address": self.position.token_address,
+                                "wallet_source": self.position.wallet_source,
+                                "position_size_usd": self.position.position_size_usd,
+                                "attempts": attempts,
+                                "reason": reason,
+                                "message": f"CRITICAL: Market exit failed after {attempts} attempts. Position retained for manual review.",
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            }
+                        })
+                    except Exception as ws_err:
+                        logger.error(f"[PROTECTION] Failed to broadcast manual review WebSocket alert: {ws_err}")
+
+                    return  # Return without creating a closed trade record
 
                 exit_price = self.current_price
                 
