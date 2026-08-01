@@ -284,31 +284,55 @@ class AutoTradeExecutor:
                     )
                     return None
 
-                # Calculate real live slippage (quoted price before order vs effective execution price post-order)
+                # Calculate real live slippage (quoted price before order vs effective execution price from on-chain balance deltas)
                 quoted_price_usd = float(entry_price) if entry_price else None
                 executed_price_usd = None
                 live_slippage = None
 
-                if quoted_price_usd and quoted_price_usd > 0 and self.token_info_service:
+                wallet_address_to_check = str(keypair.pubkey()) if keypair else getattr(signal, "wallet_source", None)
+
+                if quoted_price_usd and quoted_price_usd > 0 and tx_sig and wallet_address_to_check:
                     try:
-                        post_token_info = await self.token_info_service.get_token_info(token_address)
-                        if post_token_info and post_token_info.get("price_usd"):
-                            executed_price_usd = float(post_token_info["price_usd"])
-                            live_slippage = (quoted_price_usd - executed_price_usd) / quoted_price_usd
-                            logger.info(
-                                f"[REAL SLIPPAGE] Entry swap executed for {token_address[:8]}... "
-                                f"Quoted: ${quoted_price_usd:.6f}, Executed: ${executed_price_usd:.6f}, "
-                                f"Real Slippage: {live_slippage:.4%}"
+                        from app.infrastructure.blockchain.tx_utils import fetch_transaction_details, calculate_onchain_executed_price
+
+                        # 1. Fetch confirmed transaction payload from Solana RPC
+                        tx_details = await fetch_transaction_details(tx_sig)
+
+                        if tx_details:
+                            # 2. Get real-time SOL price in USD using existing token service or fallback
+                            sol_price_usd = settings.SOL_USD_FALLBACK
+                            if self.token_info_service:
+                                try:
+                                    sol_info = await self.token_info_service.get_token_info("So11111111111111111111111111111111111111112")
+                                    if sol_info and sol_info.get("price_usd", 0.0) > 0.0:
+                                        sol_price_usd = float(sol_info["price_usd"])
+                                except Exception:
+                                    pass
+
+                            # 3. Calculate executed price from actual on-chain balance deltas
+                            executed_price_usd = calculate_onchain_executed_price(
+                                tx_details=tx_details,
+                                wallet_address=wallet_address_to_check,
+                                token_mint=token_address,
+                                sol_price_usd=sol_price_usd
                             )
+
+                            if executed_price_usd and executed_price_usd > 0:
+                                live_slippage = (quoted_price_usd - executed_price_usd) / quoted_price_usd
+                                logger.info(
+                                    f"[REAL ONCHAIN SLIPPAGE] Entry swap confirmed for {token_address[:8]}... (TX: {tx_sig[:12]}...) "
+                                    f"Quoted: ${quoted_price_usd:.6f}, Executed (on-chain balance delta): ${executed_price_usd:.6f}, "
+                                    f"Real Slippage: {live_slippage:.4%}"
+                                )
                     except Exception as slip_err:
                         logger.warning(
-                            f"[REAL SLIPPAGE] [FAILED] Could not query post-swap transaction/price for token {token_address[:8]}...: {slip_err}. "
-                            f"Storing slippage_actual = None (null) per Section B.4 protocol."
+                            f"[REAL ONCHAIN SLIPPAGE] [FAILED] Could not parse on-chain transaction balance delta for TX {tx_sig[:12]}...: {slip_err}. "
+                            f"Storing slippage_actual = None (null) per protocol."
                         )
 
                 if live_slippage is None:
                     logger.warning(
-                        f"[REAL SLIPPAGE] Live slippage unverified for token {token_address[:8]}... "
+                        f"[REAL ONCHAIN SLIPPAGE] On-chain slippage capture unverified for token {token_address[:8]}... "
                         f"Storing slippage_actual = None (null) in database."
                     )
                     
