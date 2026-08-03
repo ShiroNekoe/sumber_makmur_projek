@@ -74,12 +74,21 @@ class TestAutoTradeExecutor(unittest.IsolatedAsyncioTestCase):
         ws_manager.broadcast = self.original_broadcast
 
     async def test_successful_execution(self):
-        open_pos = await self.executor.execute_trade(self.pred, self.fv)
-        self.assertIsNotNone(open_pos)
-        self.assertEqual(open_pos.state, "OPEN")
-        self.assertEqual(open_pos.position_size_usd, 1000.0) # Sizing = (10000 * 1%) / 10% SL = $1000
-        self.mock_position_repo.add_position.assert_called_once()
-        self.mock_cooldown_repo.set_cooldown.assert_called_once()
+        from app.core.config import settings
+        orig_mode = settings.SIZING_MODE
+        orig_cap = settings.RISK_MAX_TOTAL_EXPOSURE_USD
+        settings.SIZING_MODE = "risk_pct"
+        settings.RISK_MAX_TOTAL_EXPOSURE_USD = 2500.0
+        try:
+            open_pos = await self.executor.execute_trade(self.pred, self.fv)
+            self.assertIsNotNone(open_pos)
+            self.assertEqual(open_pos.state, "OPEN")
+            self.assertEqual(open_pos.position_size_usd, 1000.0) # Sizing = (10000 * 1%) / 10% SL = $1000
+            self.mock_position_repo.add_position.assert_called_once()
+            self.mock_cooldown_repo.set_cooldown.assert_called_once()
+        finally:
+            settings.SIZING_MODE = orig_mode
+            settings.RISK_MAX_TOTAL_EXPOSURE_USD = orig_cap
 
     async def test_position_count_cap_blocked(self):
         # Mock settings to have custom cap of 2 positions

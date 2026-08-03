@@ -602,3 +602,72 @@ async def export_portfolio_pdf(
         logger.error(f"[DASHBOARD API] /export/pdf error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
 
+
+# ─── Market Insights F-02 / FR-105 API Endpoints ────────────────────────────
+
+@router.get("/insights", summary="Get market insights list")
+async def get_market_insights(
+    request: Request,
+    status: Optional[str] = Query(default=None, description="Filter by status: PENDING_REVIEW, REJECTED_STATISTICAL, APPROVED, REJECTED_MANUAL")
+):
+    try:
+        repo = getattr(request.app.state, "market_insight_repo", None)
+        if not repo:
+            raise HTTPException(status_code=503, detail="MarketInsight repository not available")
+        insights = await repo.get_insights(status=status)
+        return [i.model_dump() for i in insights]
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] GET /insights error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/insights/{insight_id}/approve", summary="Approve market insight hypothesis")
+async def approve_market_insight(request: Request, insight_id: str):
+    try:
+        repo = getattr(request.app.state, "market_insight_repo", None)
+        if not repo:
+            raise HTTPException(status_code=503, detail="MarketInsight repository not available")
+        success = await repo.update_insight_status(insight_id, "APPROVED")
+        if not success:
+            raise HTTPException(status_code=404, detail="Insight not found")
+        return {"status": "success", "message": f"Insight {insight_id} approved. Added as feature candidate for retrain pipeline."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] POST /insights/{insight_id}/approve error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/insights/{insight_id}/reject", summary="Reject market insight hypothesis")
+async def reject_market_insight(request: Request, insight_id: str, reason: Optional[str] = Query(default=None)):
+    try:
+        repo = getattr(request.app.state, "market_insight_repo", None)
+        if not repo:
+            raise HTTPException(status_code=503, detail="MarketInsight repository not available")
+        success = await repo.update_insight_status(insight_id, "REJECTED_MANUAL", rejection_reason=reason or "Rejected manually by user.")
+        if not success:
+            raise HTTPException(status_code=404, detail="Insight not found")
+        return {"status": "success", "message": f"Insight {insight_id} rejected."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] POST /insights/{insight_id}/reject error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/insights/trigger", summary="Manually trigger AI Market Insight generator job")
+async def trigger_insight_generator(request: Request):
+    try:
+        job = getattr(request.app.state, "insight_generator_job", None)
+        if not job:
+            raise HTTPException(status_code=503, detail="InsightGeneratorJob not available")
+        results = await job.run_insight_pipeline()
+        return {
+            "status": "success",
+            "message": f"Insight generator executed successfully. Generated {len(results)} insight(s).",
+            "results": [r.model_dump() for r in results]
+        }
+    except Exception as e:
+        logger.error(f"[DASHBOARD API] POST /insights/trigger error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+

@@ -131,7 +131,7 @@ class TestPortfolioRiskGuard(unittest.IsolatedAsyncioTestCase):
         fake_now = datetime(2026, 8, 5, 12, 0, 0, tzinfo=timezone.utc) # Wednesday
         tuesday = fake_now - timedelta(days=1)
         
-        # Mock weekly loss of -$35 USD on $100 baseline (35% > 28% max_weekly_loss_pct)
+        # Mock weekly loss of -$3.50 USD on $10 baseline (35% > 28% max_weekly_loss_pct)
         # Closed on Tuesday (within week, but before Wednesday's start_of_day)
         loss_trade = ClosedTrade(
             trade_id="t_weekly_loss",
@@ -145,10 +145,10 @@ class TestPortfolioRiskGuard(unittest.IsolatedAsyncioTestCase):
             confidence_score=0.8,
             safety_check_passed=True,
             entry_price=10.0,
-            exit_price=3.0,
-            position_size_usd=50.0,
+            exit_price=6.5,
+            position_size_usd=10.0,
             risk_pct=0.01,
-            pnl_pct_actual=-0.70, # -35 USD
+            pnl_pct_actual=-0.35, # -3.50 USD
             r_multiple=-1.0,
             label="SALAH",
             holding_time_minutes=60,
@@ -172,7 +172,7 @@ class TestPortfolioRiskGuard(unittest.IsolatedAsyncioTestCase):
         fake_now = datetime(2026, 8, 5, 12, 0, 0, tzinfo=timezone.utc) # Wednesday
         tuesday = fake_now - timedelta(days=1)
 
-        # Mock weekly loss of -$25 USD on $100 baseline (25% < 28% max_weekly_loss_pct)
+        # Mock weekly loss of -$2.00 USD on $10 baseline (20% < 28% max_weekly_loss_pct)
         # Closed on Tuesday (within week, but before Wednesday's start_of_day)
         loss_trade = ClosedTrade(
             trade_id="t_weekly_loss_sub",
@@ -186,10 +186,10 @@ class TestPortfolioRiskGuard(unittest.IsolatedAsyncioTestCase):
             confidence_score=0.8,
             safety_check_passed=True,
             entry_price=10.0,
-            exit_price=5.0,
-            position_size_usd=50.0,
+            exit_price=8.0,
+            position_size_usd=10.0,
             risk_pct=0.01,
-            pnl_pct_actual=-0.50, # -25 USD
+            pnl_pct_actual=-0.20, # -2.00 USD
             r_multiple=-1.0,
             label="SALAH",
             holding_time_minutes=60,

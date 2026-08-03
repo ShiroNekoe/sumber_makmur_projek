@@ -45,6 +45,7 @@ class OpenPositionORM(Base):
     model_version = Column(String, ForeignKey("model_registry.model_version"), nullable=False)
     slippage_actual = Column(Float, nullable=True)
     dev_wallet_address = Column(String, nullable=True)
+    sizing_mode = Column(String, nullable=True, default="risk_pct")
 
     wallet = relationship("WatchlistWalletORM")
     model = relationship("ModelRegistryORM")
@@ -76,6 +77,7 @@ class ClosedTradeORM(Base):
     is_bootstrap = Column(Boolean, default=False, nullable=True)
     model_version = Column(String, ForeignKey("model_registry.model_version"), nullable=False)
     slippage_actual = Column(Float, nullable=True)
+    sizing_mode = Column(String, nullable=True, default="risk_pct")
 
     wallet = relationship("WatchlistWalletORM")
     model = relationship("ModelRegistryORM")
@@ -166,5 +168,26 @@ class EquitySnapshotORM(Base):
     trigger_type = Column(String, nullable=False)
     trigger_reason = Column(String, nullable=True)
     created_at = Column(DateTime, nullable=False)
+
+
+class MarketInsightORM(Base):
+    __tablename__ = "market_insights"
+
+    insight_id = Column(String, primary_key=True)
+    hypothesis_text = Column(String, nullable=False)
+    affected_condition = Column(String, nullable=False)
+    sample_size_group_a = Column(Integer, nullable=False)
+    sample_size_group_b = Column(Integer, nullable=False)
+    win_rate_group_a = Column(Float, nullable=False)
+    win_rate_group_b = Column(Float, nullable=False)
+    win_rate_diff = Column(Float, nullable=False)
+    expectancy_group_a = Column(Float, nullable=False)
+    expectancy_group_b = Column(Float, nullable=False)
+    expectancy_diff = Column(Float, nullable=False)
+    statistical_p_value = Column(Float, nullable=True)
+    statistical_status = Column(String, nullable=False, index=True)  # 'PENDING_REVIEW' | 'REJECTED_STATISTICAL' | 'APPROVED' | 'REJECTED_MANUAL' | 'INSUFFICIENT_DATA'
+    rejection_reason = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, index=True)
+    reviewed_at = Column(DateTime, nullable=True)
 
 

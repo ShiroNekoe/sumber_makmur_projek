@@ -3,7 +3,7 @@ import functools
 import logging
 import random
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
@@ -17,7 +17,8 @@ from app.domain.models import (
     OnchainEvent,
     FilterAuditLog,
     HardFilterAuditLog,
-    SystemErrorLog
+    SystemErrorLog,
+    MarketInsight
 )
 from app.domain.interfaces import (
     IWalletRepository,
@@ -39,7 +40,8 @@ from app.infrastructure.database.models import (
     OnchainEventORM,
     FilterAuditLogORM,
     HardFilterAuditLogORM,
-    SystemErrorLogORM
+    SystemErrorLogORM,
+    MarketInsightORM
 )
 
 
@@ -179,7 +181,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             confidence_score=orm.confidence_score,
             model_version=orm.model_version,
             slippage_actual=getattr(orm, "slippage_actual", None),
-            dev_wallet_address=getattr(orm, "dev_wallet_address", None)
+            dev_wallet_address=getattr(orm, "dev_wallet_address", None),
+            sizing_mode=getattr(orm, "sizing_mode", "risk_pct") or "risk_pct"
         )
 
     @db_locked
@@ -213,7 +216,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             confidence_score=position.confidence_score,
             model_version=position.model_version,
             slippage_actual=position.slippage_actual,
-            dev_wallet_address=position.dev_wallet_address
+            dev_wallet_address=position.dev_wallet_address,
+            sizing_mode=getattr(position, "sizing_mode", "risk_pct") or "risk_pct"
         )
         self.db.add(orm)
         self.db.commit()
@@ -237,6 +241,8 @@ class SQLAlchemyPositionRepository(IPositionRepository):
             orm.dev_wallet_address = position.dev_wallet_address
             if hasattr(orm, "slippage_actual"):
                 orm.slippage_actual = position.slippage_actual
+            if hasattr(orm, "sizing_mode"):
+                orm.sizing_mode = getattr(position, "sizing_mode", "risk_pct") or "risk_pct"
             self.db.commit()
 
     @retry_on_db_locked()
@@ -276,7 +282,8 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
             is_paper_trade=orm.is_paper_trade,
             is_bootstrap=orm.is_bootstrap or False,
             model_version=orm.model_version,
-            slippage_actual=getattr(orm, "slippage_actual", None)
+            slippage_actual=getattr(orm, "slippage_actual", None),
+            sizing_mode=getattr(orm, "sizing_mode", "risk_pct") or "risk_pct"
         )
 
     @db_locked
@@ -320,7 +327,8 @@ class SQLAlchemyTradeHistoryRepository(ITradeHistoryRepository):
             is_paper_trade=trade.is_paper_trade,
             is_bootstrap=trade.is_bootstrap or False,
             model_version=trade.model_version,
-            slippage_actual=trade.slippage_actual
+            slippage_actual=trade.slippage_actual,
+            sizing_mode=getattr(trade, "sizing_mode", "risk_pct") or "risk_pct"
         )
         self.db.add(orm)
         self.db.commit()
@@ -559,3 +567,78 @@ class SQLAlchemyErrorLogRepository(IErrorLogRepository):
     async def get_error_logs(self, limit: int = 100) -> List[SystemErrorLog]:
         orms = self.db.query(SystemErrorLogORM).order_by(SystemErrorLogORM.timestamp.desc()).limit(limit).all()
         return [self._to_domain(o) for o in orms]
+
+
+class SQLAlchemyMarketInsightRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def _to_domain(self, orm: MarketInsightORM) -> MarketInsight:
+        return MarketInsight(
+            insight_id=orm.insight_id,
+            hypothesis_text=orm.hypothesis_text,
+            affected_condition=orm.affected_condition,
+            sample_size_group_a=orm.sample_size_group_a,
+            sample_size_group_b=orm.sample_size_group_b,
+            win_rate_group_a=orm.win_rate_group_a,
+            win_rate_group_b=orm.win_rate_group_b,
+            win_rate_diff=orm.win_rate_diff,
+            expectancy_group_a=orm.expectancy_group_a,
+            expectancy_group_b=orm.expectancy_group_b,
+            expectancy_diff=orm.expectancy_diff,
+            statistical_p_value=orm.statistical_p_value,
+            statistical_status=orm.statistical_status,
+            rejection_reason=orm.rejection_reason,
+            created_at=orm.created_at,
+            reviewed_at=orm.reviewed_at
+        )
+
+    @retry_on_db_locked()
+    @db_locked
+    async def add_insight(self, insight: MarketInsight) -> None:
+        orm = MarketInsightORM(
+            insight_id=insight.insight_id,
+            hypothesis_text=insight.hypothesis_text,
+            affected_condition=insight.affected_condition,
+            sample_size_group_a=insight.sample_size_group_a,
+            sample_size_group_b=insight.sample_size_group_b,
+            win_rate_group_a=insight.win_rate_group_a,
+            win_rate_group_b=insight.win_rate_group_b,
+            win_rate_diff=insight.win_rate_diff,
+            expectancy_group_a=insight.expectancy_group_a,
+            expectancy_group_b=insight.expectancy_group_b,
+            expectancy_diff=insight.expectancy_diff,
+            statistical_p_value=insight.statistical_p_value,
+            statistical_status=insight.statistical_status,
+            rejection_reason=insight.rejection_reason,
+            created_at=insight.created_at,
+            reviewed_at=insight.reviewed_at
+        )
+        self.db.add(orm)
+        self.db.commit()
+
+    @db_locked
+    async def get_insights(self, status: Optional[str] = None, limit: int = 100) -> List[MarketInsight]:
+        query = self.db.query(MarketInsightORM)
+        if status:
+            query = query.filter(MarketInsightORM.statistical_status == status)
+        orms = query.order_by(MarketInsightORM.created_at.desc()).limit(limit).all()
+        return [self._to_domain(o) for o in orms]
+
+    @db_locked
+    async def get_insight_by_id(self, insight_id: str) -> Optional[MarketInsight]:
+        orm = self.db.query(MarketInsightORM).filter(MarketInsightORM.insight_id == insight_id).first()
+        return self._to_domain(orm) if orm else None
+
+    @retry_on_db_locked()
+    @db_locked
+    async def update_insight_status(self, insight_id: str, status: str, rejection_reason: Optional[str] = None) -> bool:
+        orm = self.db.query(MarketInsightORM).filter(MarketInsightORM.insight_id == insight_id).first()
+        if not orm:
+            return False
+        orm.statistical_status = status
+        if rejection_reason:
+            orm.rejection_reason = rejection_reason
+        orm.reviewed_at = datetime.now(timezone.utc)
+        self.db.commit()
+        return True

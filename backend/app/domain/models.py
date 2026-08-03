@@ -30,6 +30,7 @@ class OpenPosition(BaseModel):
     slippage_actual: Optional[float] = None
     unrealized_pnl_usd: Optional[float] = None
     dev_wallet_address: Optional[str] = None
+    sizing_mode: Optional[str] = "risk_pct"
 
     model_config = {
         "protected_namespaces": ()
@@ -60,6 +61,7 @@ class ClosedTrade(BaseModel):
     is_bootstrap: bool = False
     model_version: str
     slippage_actual: Optional[float] = None
+    sizing_mode: Optional[str] = "risk_pct"
 
     model_config = {
         "protected_namespaces": ()
@@ -188,6 +190,29 @@ class SystemErrorLog(BaseModel):
     context: str
     recovery_action: str
     resolution_status: str
+
+    model_config = {
+        "protected_namespaces": ()
+    }
+
+
+class MarketInsight(BaseModel):
+    insight_id: str
+    hypothesis_text: str
+    affected_condition: str
+    sample_size_group_a: int
+    sample_size_group_b: int
+    win_rate_group_a: float
+    win_rate_group_b: float
+    win_rate_diff: float
+    expectancy_group_a: float
+    expectancy_group_b: float
+    expectancy_diff: float
+    statistical_p_value: Optional[float] = None
+    statistical_status: str  # 'PENDING_REVIEW' | 'REJECTED_STATISTICAL' | 'APPROVED' | 'REJECTED_MANUAL' | 'INSUFFICIENT_DATA'
+    rejection_reason: Optional[str] = None
+    created_at: datetime
+    reviewed_at: Optional[datetime] = None
 
     model_config = {
         "protected_namespaces": ()

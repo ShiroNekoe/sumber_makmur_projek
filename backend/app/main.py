@@ -105,7 +105,8 @@ async def lifespan(app: FastAPI):
         SQLAlchemyCooldownRepository,
         SQLAlchemyTradeHistoryRepository,
         SQLAlchemyModelRegistryRepository,
-        SQLAlchemyPositionRepository
+        SQLAlchemyPositionRepository,
+        SQLAlchemyMarketInsightRepository
     )
     from app.blockchain.monitor import SolanaWebSocketMonitor, get_ws_monitor
     from app.infrastructure.blockchain.token_service import SolanaTokenInfoService, SolanaTokenSafetyService
@@ -169,6 +170,8 @@ async def lifespan(app: FastAPI):
         trade_history_repo = SQLAlchemyTradeHistoryRepository(db)
         model_registry_repo = SQLAlchemyModelRegistryRepository(db)
         position_repo = SQLAlchemyPositionRepository(db)
+        market_insight_repo = SQLAlchemyMarketInsightRepository(db)
+        app.state.market_insight_repo = market_insight_repo
         
         token_info_service = SolanaTokenInfoService()
         safety_service = SolanaTokenSafetyService()
@@ -232,6 +235,27 @@ async def lifespan(app: FastAPI):
                     logger.error(f"Error in retrain loop: {e}")
                     
         app.state.retrain_task = asyncio.create_task(retrain_loop())
+
+        # F-02 AI Market Insight Pipeline Generator Job
+        from app.use_cases.insight_generator import InsightGeneratorJob
+        insight_generator_job = InsightGeneratorJob(
+            trade_history_repo=trade_history_repo,
+            market_insight_repo=market_insight_repo
+        )
+        app.state.insight_generator_job = insight_generator_job
+
+        async def insight_loop():
+            while True:
+                try:
+                    await asyncio.sleep(86400) # Check daily for weekly job
+                    if getattr(settings, "INSIGHT_ENABLED", True):
+                        await insight_generator_job.run_insight_pipeline()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in market insight loop: {e}")
+
+        app.state.insight_task = asyncio.create_task(insight_loop())
         
         trigger_engine = TriggerEngine(
             cooldown_repo=cooldown_repo,

@@ -53,13 +53,28 @@ class Settings(BaseSettings):
     MIN_LIQUIDITY_USD: float = 3000.0
     COOLDOWN_SECONDS: int = 3600
     
+    SIZING_MODE: str = "fixed"
+    SIZING_FIXED_ORDER_SIZE_USD: float = 1.0
+
+    GROQ_API_KEY: str = ""
+    OPENROUTER_API_KEY: str = ""
+    DEEPSEEK_API_KEY: str = ""
+    TOGETHER_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+    LLM_MODEL: str = "llama-3.3-70b-versatile"
+
+    INSIGHT_ENABLED: bool = True
+    INSIGHT_SCHEDULE_CRON: str = "0 2 * * 0"
+    INSIGHT_MIN_SAMPLE_PER_GROUP: int = 10
+    INSIGHT_MODEL_NAME: str = "llama-3.3-70b-versatile"
+
     CONFIDENCE_THRESHOLD: float = 0.75
     RISK_PCT_PER_TRADE: float = 0.01
     RISK_MAX_CONCURRENT_POSITIONS: int = 3
     RISK_MAX_DAILY_LOSS_PCT: float = 0.04
     RISK_MAX_WEEKLY_LOSS_PCT: float = 0.28
-    RISK_MAX_TOTAL_EXPOSURE_USD: float = 2500.0
-    INITIAL_BASELINE_EQUITY_USD: float = 100.0
+    RISK_MAX_TOTAL_EXPOSURE_USD: float = 10.0
+    INITIAL_BASELINE_EQUITY_USD: float = 10.0
     RISK_CIRCUIT_BREAKER_RESET_UTC: str = "00:00"
     
     TRAILING_TP_TIERS: List[Dict[str, Any]] = [
@@ -177,6 +192,23 @@ class Settings(BaseSettings):
         conf_thresh = dg.get("confidence_threshold")
         if not isinstance(conf_thresh, (int, float)) or not (0.0 <= conf_thresh <= 1.0):
             raise ValueError("decision_gate.confidence_threshold must be a number between 0.0 and 1.0")
+
+        # Sizing validation
+        sz = config_data.get("sizing") or {}
+        sz_mode = sz.get("mode", "risk_pct")
+        if sz_mode not in ["fixed", "risk_pct"]:
+            raise ValueError("sizing.mode must be either 'fixed' or 'risk_pct'")
+
+        fixed_size = sz.get("fixed_order_size_usd", 1.0)
+        if sz_mode == "fixed":
+            if not isinstance(fixed_size, (int, float)) or fixed_size <= 0:
+                raise ValueError("sizing.fixed_order_size_usd must be a number > 0 when sizing.mode is 'fixed'")
+
+        # Insight validation
+        ins = config_data.get("insight") or {}
+        min_sample = ins.get("min_sample_per_group", 10)
+        if not isinstance(min_sample, int) or min_sample <= 0:
+            raise ValueError("insight.min_sample_per_group must be an integer > 0")
             
         rk = config_data.get("risk", {})
         risk_pct = rk.get("risk_pct_per_trade")
@@ -185,6 +217,14 @@ class Settings(BaseSettings):
         max_pos = rk.get("max_concurrent_positions")
         if not isinstance(max_pos, int) or max_pos <= 0:
             raise ValueError("risk.max_concurrent_positions must be an integer > 0")
+
+        max_exp = rk.get("max_total_exposure_usd")
+        if sz_mode == "fixed" and isinstance(fixed_size, (int, float)) and isinstance(max_pos, int) and isinstance(max_exp, (int, float)):
+            if max_exp < (fixed_size * max_pos):
+                raise ValueError(
+                    f"risk.max_total_exposure_usd ({max_exp}) must be >= "
+                    f"fixed_order_size_usd ({fixed_size}) * max_concurrent_positions ({max_pos}) = {fixed_size * max_pos}"
+                )
             
         # Trailing TP tiers validation
         tt = config_data.get("trailing_tp", {})
@@ -237,6 +277,18 @@ class Settings(BaseSettings):
         # Decision Gate
         dg = config_data.get("decision_gate", {})
         self.CONFIDENCE_THRESHOLD = dg.get("confidence_threshold", self.CONFIDENCE_THRESHOLD)
+
+        # Sizing
+        sz = config_data.get("sizing", {})
+        self.SIZING_MODE = sz.get("mode", self.SIZING_MODE)
+        self.SIZING_FIXED_ORDER_SIZE_USD = sz.get("fixed_order_size_usd", self.SIZING_FIXED_ORDER_SIZE_USD)
+
+        # Insight
+        ins = config_data.get("insight", {})
+        self.INSIGHT_ENABLED = ins.get("enabled", self.INSIGHT_ENABLED)
+        self.INSIGHT_SCHEDULE_CRON = ins.get("schedule_cron", self.INSIGHT_SCHEDULE_CRON)
+        self.INSIGHT_MIN_SAMPLE_PER_GROUP = ins.get("min_sample_per_group", self.INSIGHT_MIN_SAMPLE_PER_GROUP)
+        self.INSIGHT_MODEL_NAME = ins.get("model_name", self.INSIGHT_MODEL_NAME)
         
         # Risk
         rk = config_data.get("risk", {})

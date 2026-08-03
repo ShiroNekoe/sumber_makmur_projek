@@ -90,8 +90,12 @@ class AutoTradeExecutor:
             current_exposure_usd = sum(getattr(p, "position_size_usd", 0.0) or 0.0 for p in open_positions)
             max_exposure_usd = getattr(settings, "RISK_MAX_TOTAL_EXPOSURE_USD", 2500.0)
             
-            # Position sizing estimate for new entry (derived from feature_vector or real sizing rule: (equity * 1%) / 10% SL)
-            estimated_entry_usd = float(feature_vector.position_size_usd if (feature_vector and feature_vector.position_size_usd) else 100.0)
+            sizing_mode = getattr(settings, "SIZING_MODE", "fixed")
+            if sizing_mode == "fixed":
+                estimated_entry_usd = float(getattr(settings, "SIZING_FIXED_ORDER_SIZE_USD", 1.0))
+            else:
+                estimated_entry_usd = float(feature_vector.position_size_usd if (feature_vector and feature_vector.position_size_usd) else 100.0)
+
             if current_exposure_usd + estimated_entry_usd > max_exposure_usd:
                 logger.warning(
                     f"[AUTO TRADE] [BLOCKED] Total USD Exposure cap reached. "
@@ -155,35 +159,43 @@ class AutoTradeExecutor:
                 logger.error("[AUTO TRADE] [BLOCKED] SOLANA_WALLET_PRIVATE_KEY is missing or invalid in live environment! Running in live mode requires a valid keypair.")
                 return None
 
-            # 3. Sizing: 1% risk per trade sesuai dokumentasi F-08
-            # Position Size USD = (Equity * Risk Pct) / SL Distance Pct
-            # Equity = nilai total wallet dalam USD (real SOL balance)
-            risk_pct = settings.RISK_PCT_PER_TRADE
+            # 3. Sizing (FIXED vs RISK_PCT mode)
+            sizing_mode = getattr(settings, "SIZING_MODE", "risk_pct")
+            risk_pct = getattr(settings, "RISK_PCT_PER_TRADE", 0.01)
             sl_distance_pct = 0.10  # 10% jarak Stop Loss (default)
 
-            position_size_usd = (equity * risk_pct) / sl_distance_pct
-
-            # Minimum position size: 0.002 SOL (small size for lower balances)
-            # agar transaksi on-chain bisa masuk jaringan
             min_position_sol = 0.002
             min_position_usd = min_position_sol * sol_price_usd
-            if position_size_usd < min_position_usd:
-                logger.warning(
-                    f"[AUTO TRADE] Calculated position ${position_size_usd:.4f} di bawah minimum "
-                    f"${min_position_usd:.4f} ({min_position_sol} SOL). Menggunakan minimum."
+
+            if sizing_mode == "fixed":
+                fixed_size = float(getattr(settings, "SIZING_FIXED_ORDER_SIZE_USD", 1.0))
+                if fixed_size < min_position_usd:
+                    logger.error(
+                        f"[AUTO TRADE] [REJECTED] Fixed order size ${fixed_size:.4f} USD "
+                        f"is below minimum on-chain viable size ${min_position_usd:.4f} USD ({min_position_sol} SOL). "
+                        f"Please update fixed_order_size_usd in config.yaml."
+                    )
+                    return None
+                position_size_usd = fixed_size
+                logger.info(f"[AUTO TRADE] Sizing mode FIXED: position_size=${position_size_usd:.4f} USD ({position_size_usd / sol_price_usd:.6f} SOL)")
+            else:
+                position_size_usd = (equity * risk_pct) / sl_distance_pct
+                if position_size_usd < min_position_usd:
+                    logger.warning(
+                        f"[AUTO TRADE] Calculated position ${position_size_usd:.4f} di bawah minimum "
+                        f"${min_position_usd:.4f} ({min_position_sol} SOL). Menggunakan minimum."
+                    )
+                    position_size_usd = min_position_usd
+                logger.info(
+                    f"[AUTO TRADE] Sizing mode RISK_PCT: equity=${equity:.2f} | risk={risk_pct:.1%} | "
+                    f"sl_dist={sl_distance_pct:.1%} | position_size=${position_size_usd:.4f} USD "
+                    f"({position_size_usd / sol_price_usd:.6f} SOL)"
                 )
-                position_size_usd = min_position_usd
 
             # Guard: jangan melebihi max position size limit
             max_pos_size = getattr(settings, "RISK_MAX_POSITION_SIZE_USD", 5000.0)
             if position_size_usd > max_pos_size:
                 position_size_usd = max_pos_size
-
-            logger.info(
-                f"[AUTO TRADE] Sizing: equity=${equity:.2f} | risk={risk_pct:.1%} | "
-                f"sl_dist={sl_distance_pct:.1%} | position_size=${position_size_usd:.4f} USD "
-                f"({position_size_usd / sol_price_usd:.6f} SOL)"
-            )
 
             # Validasi saldo cukup sebelum lanjut (fail-fast)
             required_sol = (position_size_usd / sol_price_usd) + 0.0005 + 0.0001  # swap + fee + buffer
@@ -356,7 +368,8 @@ class AutoTradeExecutor:
                     peak_r_multiple=0.0,
                     confidence_score=prediction.confidence_score,
                     model_version=model_ver,
-                    slippage_actual=live_slippage
+                    slippage_actual=live_slippage,
+                    sizing_mode=sizing_mode
                 )
                 
                 await self.position_repo.add_position(open_pos)

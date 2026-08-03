@@ -17,6 +17,10 @@ export const endpoints = {
   dashboardActiveWallets: `${API_BASE_URL}/dashboard/wallets/active`,
   dashboardExportPdf: `${API_BASE_URL}/dashboard/export/pdf`,
   dashboardWallets: `${API_BASE_URL}/dashboard/wallets`,
+  insights: `${API_BASE_URL}/dashboard/insights`,
+  approveInsight: (id: string) => `${API_BASE_URL}/dashboard/insights/${id}/approve`,
+  rejectInsight: (id: string) => `${API_BASE_URL}/dashboard/insights/${id}/reject`,
+  triggerInsight: `${API_BASE_URL}/dashboard/insights/trigger`,
 };
 
 export const exportPortfolioPdfUrl = (startDate?: string, endDate?: string) => {
@@ -121,5 +125,31 @@ export const deleteManualWallet = async (walletAddress: string) => {
     const errData = await res.json().catch(() => ({}));
     throw new Error(errData.detail || 'Failed to remove wallet from watchlist');
   }
+  return res.json();
+};
+
+export const fetchMarketInsights = async (status?: string) => {
+  const url = status ? `${endpoints.insights}?status=${encodeURIComponent(status)}` : endpoints.insights;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to fetch market insights');
+  return res.json();
+};
+
+export const approveMarketInsight = async (id: string) => {
+  const res = await fetch(endpoints.approveInsight(id), { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to approve insight');
+  return res.json();
+};
+
+export const rejectMarketInsight = async (id: string, reason?: string) => {
+  const url = reason ? `${endpoints.rejectInsight(id)}?reason=${encodeURIComponent(reason)}` : endpoints.rejectInsight(id);
+  const res = await fetch(url, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to reject insight');
+  return res.json();
+};
+
+export const triggerMarketInsightJob = async () => {
+  const res = await fetch(endpoints.triggerInsight, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to trigger market insight job');
   return res.json();
 };

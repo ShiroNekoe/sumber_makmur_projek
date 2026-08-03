@@ -24,6 +24,7 @@ import {
   FileText,
   Plus,
   Trash2,
+  Sparkles,
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { 
@@ -39,6 +40,10 @@ import {
   exportPortfolioPdfUrl,
   addManualWallet,
   deleteManualWallet,
+  fetchMarketInsights,
+  approveMarketInsight,
+  rejectMarketInsight,
+  triggerMarketInsightJob,
 } from '../services/api'
 
 export const Dashboard: React.FC = () => {
@@ -83,6 +88,11 @@ export const Dashboard: React.FC = () => {
   // Watchlist Manual Addition & Deletion States
   const [newWalletAddress, setNewWalletAddress] = useState('');
   const [newWalletLabel, setNewWalletLabel] = useState('');
+
+  // AI Market Insights States
+  const [insights, setInsights] = useState<any[]>([]);
+  const [insightFilter, setInsightFilter] = useState<string>('ALL');
+  const [isGeneratingInsights, setIsGeneratingInsights] = useState<boolean>(false);
   const [isAddingWallet, setIsAddingWallet] = useState(false);
   const [isDeletingWallet, setIsDeletingWallet] = useState<string | null>(null);
   
@@ -197,13 +207,57 @@ export const Dashboard: React.FC = () => {
           if (portRes) {
             setPortfolio(portRes)
           }
+        } else if (activeTab === 'insights') {
+          const res = await fetchMarketInsights(insightFilter === 'ALL' ? undefined : insightFilter)
+          if (res) {
+            setInsights(res)
+          }
         }
       } catch (err) {
         console.warn(`Failed loading data for tab ${activeTab}:`, err)
       }
     }
     fetchTabData()
-  }, [activeTab])
+  }, [activeTab, insightFilter])
+
+  const handleApproveInsight = async (id: string) => {
+    try {
+      addNotification(`Approving insight ${id}...`, 'info')
+      await approveMarketInsight(id)
+      addNotification('Insight approved and added to retrain candidates!', 'success')
+      const updated = await fetchMarketInsights(insightFilter === 'ALL' ? undefined : insightFilter)
+      setInsights(updated)
+    } catch (err: any) {
+      addNotification(`Failed to approve insight: ${err.message}`, 'error')
+    }
+  }
+
+  const handleRejectInsight = async (id: string) => {
+    try {
+      addNotification(`Rejecting insight ${id}...`, 'info')
+      await rejectMarketInsight(id)
+      addNotification('Insight rejected', 'warning')
+      const updated = await fetchMarketInsights(insightFilter === 'ALL' ? undefined : insightFilter)
+      setInsights(updated)
+    } catch (err: any) {
+      addNotification(`Failed to reject insight: ${err.message}`, 'error')
+    }
+  }
+
+  const handleTriggerInsight = async () => {
+    try {
+      setIsGeneratingInsights(true)
+      addNotification('Triggering AI Market Insight generator job...', 'info')
+      const res = await triggerMarketInsightJob()
+      addNotification(`Insight generator completed! Generated ${res.results?.length || 0} insight(s).`, 'success')
+      const updated = await fetchMarketInsights(insightFilter === 'ALL' ? undefined : insightFilter)
+      setInsights(updated)
+    } catch (err: any) {
+      addNotification(`Insight generator failed: ${err.message}`, 'error')
+    } finally {
+      setIsGeneratingInsights(false)
+    }
+  }
 
   const handleWalletAction = async (address: string, action: 'approve' | 'reject') => {
     try {
@@ -388,6 +442,13 @@ export const Dashboard: React.FC = () => {
           >
             <History className="w-3.5 h-3.5" />
             <span>TRADES</span>
+          </button>
+          <button 
+            onClick={() => setActiveTab('insights')} 
+            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded transition-all cursor-pointer ${activeTab === 'insights' ? 'bg-indigo-600 text-white shadow' : 'text-cyber-textMuted hover:text-white'}`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>AI INSIGHTS</span>
           </button>
           <button 
             onClick={() => setActiveTab('diagnostics')} 
@@ -1385,6 +1446,122 @@ export const Dashboard: React.FC = () => {
                   )}
                 </tbody>
               </table>
+            </div>
+          </section>
+        )}
+
+        {/* TAB 4.5: AI MARKET INSIGHTS */}
+        {activeTab === 'insights' && (
+          <section className="flex flex-col space-y-4">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center p-4 bg-cyber-card border border-cyber-border rounded-xl gap-4">
+              <div className="flex items-center space-x-3">
+                <div className="p-2 bg-indigo-600/20 text-indigo-400 rounded-lg border border-indigo-500/30">
+                  <Sparkles className="w-5 h-5 animate-pulse" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold tracking-wider text-white font-mono uppercase">F-02 AI Market Insights Pipeline (Statistical Gated)</h2>
+                  <p className="text-xs text-cyber-textMuted font-mono">LLM Hypotheses verified against real historical ClosedTrade statistics before human approval checkpoint</p>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-3">
+                <div className="flex bg-cyber-cardLight p-1 rounded-lg border border-cyber-border text-xs font-mono">
+                  {['ALL', 'PENDING_REVIEW', 'APPROVED', 'REJECTED_STATISTICAL', 'REJECTED_MANUAL'].map((st) => (
+                    <button
+                      key={st}
+                      onClick={() => setInsightFilter(st)}
+                      className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${insightFilter === st ? 'bg-indigo-600 text-white font-bold' : 'text-cyber-textMuted hover:text-white'}`}
+                    >
+                      {st.replace('_', ' ')}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  onClick={handleTriggerInsight}
+                  disabled={isGeneratingInsights}
+                  className="flex items-center space-x-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-mono font-bold transition-all cursor-pointer shadow-lg"
+                >
+                  <RotateCw className={`w-3.5 h-3.5 ${isGeneratingInsights ? 'animate-spin' : ''}`} />
+                  <span>{isGeneratingInsights ? 'GENERATING...' : 'TRIGGER JOB'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Insights List Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {insights.length > 0 ? (
+                insights.map((insight: any) => (
+                  <div key={insight.insight_id} className="p-5 bg-cyber-card border border-cyber-border rounded-xl space-y-3 relative overflow-hidden">
+                    <div className="flex justify-between items-start">
+                      <span className={`px-2.5 py-1 rounded text-[10px] font-mono font-bold ${
+                        insight.statistical_status === 'APPROVED' ? 'bg-cyber-emerald/20 text-cyber-emerald border border-cyber-emerald/40' :
+                        insight.statistical_status === 'PENDING_REVIEW' ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 animate-pulse' :
+                        insight.statistical_status === 'REJECTED_STATISTICAL' ? 'bg-cyber-amber/10 text-cyber-amber border border-cyber-amber/30' :
+                        'bg-cyber-rose/10 text-cyber-rose border border-cyber-rose/30'
+                      }`}>
+                        {insight.statistical_status}
+                      </span>
+                      <span className="text-[10px] font-mono text-cyber-textMuted/60">{new Date(insight.created_at).toLocaleString()}</span>
+                    </div>
+
+                    <h3 className="text-sm font-bold text-white font-mono leading-snug">{insight.hypothesis_text}</h3>
+
+                    <div className="bg-cyber-cardLight/50 p-2.5 rounded border border-cyber-border/40 font-mono text-xs space-y-1">
+                      <div className="text-[10px] text-cyber-textMuted uppercase font-bold">Tested Condition:</div>
+                      <code className="text-indigo-300 text-xs break-all block bg-cyber-card p-1 rounded border border-cyber-border/20">{insight.affected_condition}</code>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 font-mono text-xs pt-1">
+                      <div className="bg-cyber-cardLight p-2 rounded text-center border border-cyber-border/20">
+                        <div className="text-[9px] text-cyber-textMuted uppercase">Group Samples</div>
+                        <div className="text-white font-bold">{insight.sample_size_group_a} vs {insight.sample_size_group_b}</div>
+                      </div>
+                      <div className="bg-cyber-cardLight p-2 rounded text-center border border-cyber-border/20">
+                        <div className="text-[9px] text-cyber-textMuted uppercase">Win Rate Diff</div>
+                        <div className={`font-bold ${insight.win_rate_diff > 0 ? 'text-cyber-emerald' : 'text-cyber-rose'}`}>
+                          {insight.win_rate_diff > 0 ? '+' : ''}{(insight.win_rate_diff * 100).toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="bg-cyber-cardLight p-2 rounded text-center border border-cyber-border/20">
+                        <div className="text-[9px] text-cyber-textMuted uppercase">Expectancy Diff</div>
+                        <div className={`font-bold ${insight.expectancy_diff > 0 ? 'text-cyber-emerald' : 'text-cyber-rose'}`}>
+                          {insight.expectancy_diff > 0 ? '+' : ''}{insight.expectancy_diff.toFixed(2)}R
+                        </div>
+                      </div>
+                    </div>
+
+                    {insight.rejection_reason && (
+                      <div className="p-2 bg-cyber-rose/10 border border-cyber-rose/20 rounded text-[11px] font-mono text-cyber-rose">
+                        <span className="font-bold">Rejection Reason: </span>{insight.rejection_reason}
+                      </div>
+                    )}
+
+                    {insight.statistical_status === 'PENDING_REVIEW' && (
+                      <div className="flex space-x-3 pt-2">
+                        <button
+                          onClick={() => handleApproveInsight(insight.insight_id)}
+                          className="flex-1 py-1.5 bg-cyber-emerald/20 hover:bg-cyber-emerald text-cyber-emerald hover:text-white rounded border border-cyber-emerald/40 text-xs font-mono font-bold transition-all cursor-pointer"
+                        >
+                          Approve (Retrain Candidate)
+                        </button>
+                        <button
+                          onClick={() => handleRejectInsight(insight.insight_id)}
+                          className="flex-1 py-1.5 bg-cyber-rose/20 hover:bg-cyber-rose text-cyber-rose hover:text-white rounded border border-cyber-rose/40 text-xs font-mono font-bold transition-all cursor-pointer"
+                        >
+                          Reject Hypothesis
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="col-span-2 p-12 text-center bg-cyber-card border border-cyber-border rounded-xl font-mono text-cyber-textMuted">
+                  <Sparkles className="w-8 h-8 text-cyber-textMuted/40 mx-auto mb-2" />
+                  <p className="text-sm">No market insights found for status filter '{insightFilter}'.</p>
+                  <p className="text-xs text-cyber-textMuted/60 mt-1">Click "TRIGGER JOB" above to execute LLM hypothesis generation and statistical validation.</p>
+                </div>
+              )}
             </div>
           </section>
         )}

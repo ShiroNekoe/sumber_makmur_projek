@@ -44,6 +44,16 @@ def run_db_migrations(engine_obj):
                 if "dev_wallet_address" not in cols:
                     conn.execute(text("ALTER TABLE open_positions ADD COLUMN dev_wallet_address VARCHAR"))
                     conn.commit()
+                if "sizing_mode" not in cols:
+                    conn.execute(text("ALTER TABLE open_positions ADD COLUMN sizing_mode VARCHAR DEFAULT 'risk_pct'"))
+                    conn.commit()
+
+            res_ct = conn.execute(text("PRAGMA table_info(closed_trades)"))
+            cols_ct = [row[1] for row in res_ct.fetchall()]
+            if cols_ct:
+                if "sizing_mode" not in cols_ct:
+                    conn.execute(text("ALTER TABLE closed_trades ADD COLUMN sizing_mode VARCHAR DEFAULT 'risk_pct'"))
+                    conn.commit()
     except Exception:
         pass
 
