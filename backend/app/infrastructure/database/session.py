@@ -37,9 +37,13 @@ def run_db_migrations(engine_obj):
         with engine_obj.connect() as conn:
             res = conn.execute(text("PRAGMA table_info(open_positions)"))
             cols = [row[1] for row in res.fetchall()]
-            if cols and "dev_wallet_address" not in cols:
-                conn.execute(text("ALTER TABLE open_positions ADD COLUMN dev_wallet_address VARCHAR"))
-                conn.commit()
+            if cols:
+                if "slippage_actual" not in cols:
+                    conn.execute(text("ALTER TABLE open_positions ADD COLUMN slippage_actual FLOAT"))
+                    conn.commit()
+                if "dev_wallet_address" not in cols:
+                    conn.execute(text("ALTER TABLE open_positions ADD COLUMN dev_wallet_address VARCHAR"))
+                    conn.commit()
     except Exception:
         pass
 

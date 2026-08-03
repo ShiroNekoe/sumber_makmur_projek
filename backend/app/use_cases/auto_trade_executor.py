@@ -289,7 +289,7 @@ class AutoTradeExecutor:
                 executed_price_usd = None
                 live_slippage = None
 
-                wallet_address_to_check = str(keypair.pubkey()) if keypair else getattr(signal, "wallet_source", None)
+                wallet_address_to_check = str(keypair.pubkey()) if keypair else wallet_source
 
                 if quoted_price_usd and quoted_price_usd > 0 and tx_sig and wallet_address_to_check:
                     try:

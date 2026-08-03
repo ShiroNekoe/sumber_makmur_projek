@@ -128,26 +128,27 @@ class TestPortfolioRiskGuard(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Blocked: Circuit Breaker Triggered", msg)
 
     async def test_weekly_circuit_breaker_triggered(self):
-        now = datetime.now(timezone.utc)
-        # Mock weekly loss of -$180 USD on $1000 baseline (18% > 15% max_weekly_loss_pct)
-        # Entry/exit 3 days ago (within week, but before today's start)
-        three_days_ago = now - timedelta(days=3)
+        fake_now = datetime(2026, 8, 5, 12, 0, 0, tzinfo=timezone.utc) # Wednesday
+        tuesday = fake_now - timedelta(days=1)
+        
+        # Mock weekly loss of -$35 USD on $100 baseline (35% > 28% max_weekly_loss_pct)
+        # Closed on Tuesday (within week, but before Wednesday's start_of_day)
         loss_trade = ClosedTrade(
             trade_id="t_weekly_loss",
             wallet_source="w1",
             token_address="token1",
             token_symbol="T1",
-            signal_ts=three_days_ago,
-            entry_ts=three_days_ago,
-            exit_ts=three_days_ago + timedelta(hours=1),
+            signal_ts=tuesday - timedelta(hours=1),
+            entry_ts=tuesday - timedelta(hours=1),
+            exit_ts=tuesday,
             direction="BUY",
             confidence_score=0.8,
             safety_check_passed=True,
             entry_price=10.0,
-            exit_price=1.0,
-            position_size_usd=200.0,
+            exit_price=3.0,
+            position_size_usd=50.0,
             risk_pct=0.01,
-            pnl_pct_actual=-0.90, # -180 USD
+            pnl_pct_actual=-0.70, # -35 USD
             r_multiple=-1.0,
             label="SALAH",
             holding_time_minutes=60,
@@ -160,9 +161,53 @@ class TestPortfolioRiskGuard(unittest.IsolatedAsyncioTestCase):
         self.mock_trade_repo.get_closed_trades = AsyncMock(return_value=[loss_trade])
         self.mock_pos_repo.get_open_positions = AsyncMock(return_value=[])
 
-        allowed, reason = await self.risk_guard.is_trading_allowed()
+        with patch("app.use_cases.risk_guard.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            allowed, reason = await self.risk_guard.is_trading_allowed()
+
         self.assertFalse(allowed)
         self.assertIn("Circuit Breaker Triggered: Weekly loss", reason)
+
+    async def test_weekly_circuit_breaker_not_triggered_below_threshold(self):
+        fake_now = datetime(2026, 8, 5, 12, 0, 0, tzinfo=timezone.utc) # Wednesday
+        tuesday = fake_now - timedelta(days=1)
+
+        # Mock weekly loss of -$25 USD on $100 baseline (25% < 28% max_weekly_loss_pct)
+        # Closed on Tuesday (within week, but before Wednesday's start_of_day)
+        loss_trade = ClosedTrade(
+            trade_id="t_weekly_loss_sub",
+            wallet_source="w1",
+            token_address="token1",
+            token_symbol="T1",
+            signal_ts=tuesday - timedelta(hours=1),
+            entry_ts=tuesday - timedelta(hours=1),
+            exit_ts=tuesday,
+            direction="BUY",
+            confidence_score=0.8,
+            safety_check_passed=True,
+            entry_price=10.0,
+            exit_price=5.0,
+            position_size_usd=50.0,
+            risk_pct=0.01,
+            pnl_pct_actual=-0.50, # -25 USD
+            r_multiple=-1.0,
+            label="SALAH",
+            holding_time_minutes=60,
+            exit_reason="sl_target",
+            is_paper_trade=False,
+            is_bootstrap=False,
+            model_version="v0"
+        )
+
+        self.mock_trade_repo.get_closed_trades = AsyncMock(return_value=[loss_trade])
+        self.mock_pos_repo.get_open_positions = AsyncMock(return_value=[])
+
+        with patch("app.use_cases.risk_guard.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            allowed, reason = await self.risk_guard.is_trading_allowed()
+
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "Trading allowed.")
 
     async def test_real_usd_exposure_cap_exceeded(self):
         # Test that AutoTradeExecutor blocks trade entry if total USD exposure exceeds cap ($2500)
