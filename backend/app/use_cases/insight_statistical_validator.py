@@ -13,24 +13,96 @@ from scipy.stats import norm
 from app.core.config import settings
 from app.domain.models import ClosedTrade, MarketInsight
 
+import ast
+
 logger = logging.getLogger(__name__)
+
+# Allowed AST Operators & Nodes for safe evaluation
+ALLOWED_OPERATORS = {
+    ast.Eq: lambda a, b: a == b,
+    ast.NotEq: lambda a, b: a != b,
+    ast.Lt: lambda a, b: a < b,
+    ast.LtE: lambda a, b: a <= b,
+    ast.Gt: lambda a, b: a > b,
+    ast.GtE: lambda a, b: a >= b,
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b if b != 0 else 0,
+}
+
+ALLOWED_UNARY_OPERATORS = {
+    ast.USub: lambda a: -a,
+    ast.UAdd: lambda a: +a,
+    ast.Not: lambda a: not a,
+}
+
+
+def _safe_eval_ast_node(node: ast.AST, context: Dict[str, Any]) -> Any:
+    if isinstance(node, ast.Expression):
+        return _safe_eval_ast_node(node.body, context)
+    elif isinstance(node, ast.Constant):
+        return node.value
+    elif isinstance(node, (ast.Num, ast.Str, ast.NameConstant)):  # Compat
+        return getattr(node, 'value', getattr(node, 'n', getattr(node, 's', None)))
+    elif isinstance(node, ast.Name):
+        if node.id in context:
+            return context[node.id]
+        raise ValueError(f"Variable '{node.id}' is not an allowed trade context attribute")
+    elif isinstance(node, ast.UnaryOp):
+        op_type = type(node.op)
+        if op_type not in ALLOWED_UNARY_OPERATORS:
+            raise ValueError(f"Unary operator {op_type.__name__} is not allowed")
+        operand = _safe_eval_ast_node(node.operand, context)
+        return ALLOWED_UNARY_OPERATORS[op_type](operand)
+    elif isinstance(node, ast.BinOp):
+        op_type = type(node.op)
+        if op_type not in ALLOWED_OPERATORS:
+            raise ValueError(f"Binary operator {op_type.__name__} is not allowed")
+        left = _safe_eval_ast_node(node.left, context)
+        right = _safe_eval_ast_node(node.right, context)
+        return ALLOWED_OPERATORS[op_type](left, right)
+    elif isinstance(node, ast.BoolOp):
+        if type(node.op) is ast.And:
+            for value_node in node.values:
+                if not _safe_eval_ast_node(value_node, context):
+                    return False
+            return True
+        elif type(node.op) is ast.Or:
+            for value_node in node.values:
+                if _safe_eval_ast_node(value_node, context):
+                    return True
+            return False
+        else:
+            raise ValueError(f"Boolean operator {type(node.op).__name__} is not allowed")
+    elif isinstance(node, ast.Compare):
+        left = _safe_eval_ast_node(node.left, context)
+        for op, comparator in zip(node.ops, node.comparators):
+            op_type = type(op)
+            if op_type not in ALLOWED_OPERATORS:
+                raise ValueError(f"Comparison operator {op_type.__name__} is not allowed")
+            right = _safe_eval_ast_node(comparator, context)
+            if not ALLOWED_OPERATORS[op_type](left, right):
+                return False
+            left = right
+        return True
+    else:
+        raise ValueError(f"Disallowed AST node type: {type(node).__name__}")
+
+
+def safe_eval_condition(condition_str: str, context: Dict[str, Any]) -> bool:
+    """
+    Safely parses and evaluates a boolean comparison expression without eval().
+    Strictly forbids function calls, attribute access, subscripts, and imports.
+    """
+    parsed_ast = ast.parse(condition_str, mode='eval')
+    res = _safe_eval_ast_node(parsed_ast, context)
+    return bool(res)
 
 
 def _evaluate_trade_condition(trade: ClosedTrade, condition_str: str) -> Optional[bool]:
     """
-    Safely evaluates a python boolean expression against a ClosedTrade object attributes.
-    Supported variables in condition_str:
-      - confidence_score
-      - holding_time_minutes
-      - position_size_usd
-      - risk_pct
-      - pnl_pct_actual
-      - r_multiple
-      - exit_reason
-      - is_paper_trade
-      - is_bootstrap
-      - label
-      - direction
+    Safely evaluates a trade hypothesis condition string against ClosedTrade attributes.
     """
     try:
         trade_context = {
@@ -46,12 +118,10 @@ def _evaluate_trade_condition(trade: ClosedTrade, condition_str: str) -> Optiona
             "label": str(trade.label),
             "direction": str(trade.direction)
         }
-        # Restrict builtins for safe eval
-        allowed_globals = {"__builtins__": {}}
-        res = eval(condition_str, allowed_globals, trade_context)
-        return bool(res)
+        res = safe_eval_condition(condition_str, trade_context)
+        return res
     except Exception as e:
-        logger.debug(f"[STATISTICAL VALIDATOR] Failed to evaluate condition '{condition_str}' on trade {trade.trade_id}: {e}")
+        logger.debug(f"[STATISTICAL VALIDATOR] Failed to safely evaluate condition '{condition_str}' on trade {trade.trade_id}: {e}")
         return None
 
 

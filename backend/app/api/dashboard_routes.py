@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from app.api.auth import verify_admin_api_key
 
 from app.api.schemas import (
     SignalListResponse,
@@ -284,6 +285,7 @@ async def get_wallet_candidates(request: Request = None):
     "/wallets/{wallet_address}/approve",
     response_model=WalletApprovalResponse,
     summary="Approve or reject a wallet candidate",
+    dependencies=[Depends(verify_admin_api_key)]
 )
 async def approve_wallet_candidate(
     wallet_address: str,
@@ -403,7 +405,7 @@ async def get_active_wallets(request: Request = None):
 
 # ─── POST /dashboard/wallets ──────────────────────────────────────────────────
 
-@router.post("/wallets", response_model=WalletAddResponse, summary="Manually add a wallet to the watchlist")
+@router.post("/wallets", response_model=WalletAddResponse, summary="Manually add a wallet to the watchlist", dependencies=[Depends(verify_admin_api_key)])
 async def add_manual_wallet(body: WalletAddRequest, request: Request):
     try:
         # Verify Solana address format
@@ -460,7 +462,7 @@ async def add_manual_wallet(body: WalletAddRequest, request: Request):
 
 # ─── DELETE /dashboard/wallets/{wallet_address} ───────────────────────────────
 
-@router.delete("/wallets/{wallet_address}", response_model=WalletDeleteResponse, summary="Manually remove/deactivate a wallet from the watchlist")
+@router.delete("/wallets/{wallet_address}", response_model=WalletDeleteResponse, summary="Manually remove/deactivate a wallet from the watchlist", dependencies=[Depends(verify_admin_api_key)])
 async def delete_manual_wallet(wallet_address: str, request: Request):
     try:
         query_service = _get_query_service(request)
@@ -621,7 +623,7 @@ async def get_market_insights(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/insights/{insight_id}/approve", summary="Approve market insight hypothesis")
+@router.post("/insights/{insight_id}/approve", summary="Approve market insight hypothesis", dependencies=[Depends(verify_admin_api_key)])
 async def approve_market_insight(request: Request, insight_id: str):
     try:
         repo = getattr(request.app.state, "market_insight_repo", None)
@@ -638,7 +640,7 @@ async def approve_market_insight(request: Request, insight_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/insights/{insight_id}/reject", summary="Reject market insight hypothesis")
+@router.post("/insights/{insight_id}/reject", summary="Reject market insight hypothesis", dependencies=[Depends(verify_admin_api_key)])
 async def reject_market_insight(request: Request, insight_id: str, reason: Optional[str] = Query(default=None)):
     try:
         repo = getattr(request.app.state, "market_insight_repo", None)
@@ -655,7 +657,7 @@ async def reject_market_insight(request: Request, insight_id: str, reason: Optio
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/insights/trigger", summary="Manually trigger AI Market Insight generator job")
+@router.post("/insights/trigger", summary="Manually trigger AI Market Insight generator job", dependencies=[Depends(verify_admin_api_key)])
 async def trigger_insight_generator(request: Request):
     try:
         job = getattr(request.app.state, "insight_generator_job", None)

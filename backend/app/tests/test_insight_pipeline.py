@@ -125,6 +125,32 @@ class TestStatisticalValidator(unittest.TestCase):
         self.assertLess(insight.win_rate_diff, 0)
         self.assertIn("Difference not statistically significant", insight.rejection_reason)
 
+    def test_safe_eval_valid_conditions(self):
+        """Test safe_eval_condition correctly evaluates valid numeric and boolean logic."""
+        from app.use_cases.insight_statistical_validator import safe_eval_condition
+        ctx = {"confidence_score": 0.85, "holding_time_minutes": 45, "r_multiple": 2.5, "exit_reason": "trailing_tp"}
+        self.assertTrue(safe_eval_condition("r_multiple > 2.0 and confidence_score < 0.9", ctx))
+        self.assertFalse(safe_eval_condition("holding_time_minutes < 30 or r_multiple < 0", ctx))
+        self.assertTrue(safe_eval_condition("exit_reason == 'trailing_tp'", ctx))
+
+    def test_safe_eval_rejects_malicious_payloads(self):
+        """Test safe_eval_condition strictly REJECTS dangerous exploit payloads and sandbox escapes."""
+        from app.use_cases.insight_statistical_validator import _evaluate_trade_condition
+        trade = create_mock_trade("t1", 0.8, 30, 1.0)
+        
+        malicious_payloads = [
+            "().__class__.__base__.__subclasses__()",
+            "__import__('os').system('echo pwned')",
+            "[c for c in ().__class__.__base__.__subclasses__() if c.__name__ == 'BuiltinImporter'][0]()",
+            "getattr(confidence_score, '__class__')",
+            "open('/etc/passwd').read()",
+            "eval('1+1')"
+        ]
+
+        for payload in malicious_payloads:
+            res = _evaluate_trade_condition(trade, payload)
+            self.assertIsNone(res, f"Payload '{payload}' was NOT rejected!")
+
 
 class TestInsightGeneratorAndRepository(unittest.IsolatedAsyncioTestCase):
 

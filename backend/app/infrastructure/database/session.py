@@ -51,6 +51,9 @@ def run_db_migrations(engine_obj):
             res_ct = conn.execute(text("PRAGMA table_info(closed_trades)"))
             cols_ct = [row[1] for row in res_ct.fetchall()]
             if cols_ct:
+                if "slippage_actual" not in cols_ct:
+                    conn.execute(text("ALTER TABLE closed_trades ADD COLUMN slippage_actual FLOAT"))
+                    conn.commit()
                 if "sizing_mode" not in cols_ct:
                     conn.execute(text("ALTER TABLE closed_trades ADD COLUMN sizing_mode VARCHAR DEFAULT 'risk_pct'"))
                     conn.commit()

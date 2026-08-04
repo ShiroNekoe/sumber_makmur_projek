@@ -18,7 +18,9 @@ logger = logging.getLogger("watchdog")
 
 def main():
     restart_count = 0
-    # Command to run backend
+    # SECURITY WARNING: The host binding '127.0.0.1' is a critical component of the system's
+    # defence-in-depth security model. DO NOT change this binding to '0.0.0.0' without first
+    # enforcing mandatory API Key authentication across ALL state-changing and read-only endpoints.
     cmd = [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8002"]
     
     logger.info("Starting Watchdog process monitoring Solana AI Trading System...")

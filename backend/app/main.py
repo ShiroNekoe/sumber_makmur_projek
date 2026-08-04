@@ -117,6 +117,7 @@ async def lifespan(app: FastAPI):
     from app.use_cases.auto_trade_executor import AutoTradeExecutor
     from app.use_cases.dashboard_query import DashboardQueryService
     from app.use_cases.retrain_scheduler import RetrainScheduler
+
     import asyncio
 
     import os
@@ -547,5 +548,13 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({"type": "ping_ack", "data": data})
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    # SECURITY WARNING: The host binding '127.0.0.1' is a critical component of the system's
+    # defence-in-depth security perimeter. DO NOT change this binding to '0.0.0.0' without first
+    # enforcing mandatory API Key authentication across ALL state-changing and read-only endpoints.
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8002, reload=True)
 
 # Reload trigger comment to refresh CORS settings from .env

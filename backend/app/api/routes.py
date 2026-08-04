@@ -45,7 +45,7 @@ def get_system_status() -> Dict[str, str]:
         "ml_inference": "ready"
     }
 
-@router.post("/retrain")
+@router.post("/retrain", dependencies=[Depends(verify_admin_api_key)])
 async def trigger_manual_retrain(request: Request) -> Dict[str, str]:
     scheduler = getattr(request.app.state, "retrain_scheduler", None)
     if not scheduler:
