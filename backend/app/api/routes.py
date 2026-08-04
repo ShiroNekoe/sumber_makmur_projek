@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends
 from typing import Dict, Any
 from app.api.dashboard_routes import router as dashboard_router
 from app.core.config import settings
+from app.api.auth import verify_admin_api_key
 
 router = APIRouter()
 

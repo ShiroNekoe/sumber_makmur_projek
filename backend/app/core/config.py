@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Sumber Makmur System"
+    API_V1_STR: str = "/api/v1"
+    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:5174"]
     ADMIN_API_KEY: str = ""
     
     # LLM Multi-Provider API Keys & Model Setup (loaded from .env / environment)
