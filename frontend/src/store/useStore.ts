@@ -84,6 +84,8 @@ export interface ToastNotification {
   timestamp: string;
 }
 
+export type DashboardTab = 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics' | 'portfolio' | 'insights';
+
 interface AppStore {
   isConnected: boolean;
   walletMonitor: WalletMonitorState;
@@ -96,7 +98,7 @@ interface AppStore {
   systemStatus: SystemStatus;
   walletCandidates: WalletCandidate[];
   notifications: ToastNotification[];
-  activeTab: 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics' | 'portfolio';
+  activeTab: DashboardTab;
   selectedSignal: any | null;
   selectedTrade: any | null;
   selectedCandidate: any | null;
@@ -120,7 +122,7 @@ interface AppStore {
   approveWalletCandidate: (address: string, action: 'approve' | 'reject') => void;
   addNotification: (message: string, type?: ToastNotification['type']) => void;
   dismissNotification: (id: string) => void;
-  setActiveTab: (tab: 'overview' | 'watchlist' | 'signals' | 'trades' | 'diagnostics' | 'portfolio') => void;
+  setActiveTab: (tab: DashboardTab) => void;
   setSelectedSignal: (signal: any | null) => void;
   setSelectedTrade: (trade: any | null) => void;
   setSelectedCandidate: (candidate: any | null) => void;
